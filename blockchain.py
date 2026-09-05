@@ -115,7 +115,11 @@ def airdrop(pub_b58, lamports=LAMPORTS_PER_SOL, retries=5):
                         "confirmed", "finalized"):
                     return sig
             return sig
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            # Deterministic faucet exhaustion: retrying is pointless.
+            if any(s in str(e).lower()
+                   for s in ("limit today", "run dry", "faucet", "http 429")):
+                raise
             time.sleep(5)
     raise RuntimeError("devnet airdrop failed (rate-limited?) — fund "
                        f"{pub_b58} manually from https://faucet.solana.com")

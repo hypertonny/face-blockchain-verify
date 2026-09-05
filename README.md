@@ -78,15 +78,19 @@ Artifacts in `out/`: `record.json` (canonical record + `record_sha256`),
 
 ## Screen recording
 
-Record one unedited terminal session running:
+`demo.mp4` is a full end-to-end run with no cuts: face detect + encode,
+live reverse-image search (255 matches / 42 social), Solana attempt with
+automatic Stellar fallback, on-chain confirmation, and `verify.py` printing
+MATCH. `demo.cast` is the raw unedited terminal session (replay with
+`asciinema play demo.cast`); `demo_run.sh` reproduces it, `render_cast.py`
+rendered the video frame-by-frame from the recorded bytes.
+
+To record your own unedited session:
 
 ```bash
 bash run.sh samples/elon_musk.jpg
 python verify.py --tx <signature-from-above> --record out/record.json
 ```
-
-showing the face backend, live match count, best social-media post URL,
-confirmed transaction signature, and explorer link.
 
 ## Known limitations
 
