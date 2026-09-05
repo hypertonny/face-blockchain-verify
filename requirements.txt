@@ -1,0 +1,16 @@
+# Core (always needed)
+opencv-python-headless>=4.8
+numpy>=1.24
+requests>=2.31
+
+# Blockchain: Solana devnet client (pure python) + Stellar testnet fallback
+base58>=2.1
+pynacl>=1.5
+stellar-sdk>=12.0
+
+# Optional: best face backend (auto-used if installed)
+# insightface>=0.7
+# onnxruntime>=1.16
+
+# Optional: genuine Google Lens via SerpApi (needs SERPAPI_API_KEY)
+# serpapi>=0.1  (plain HTTP is used instead — no SDK required)
