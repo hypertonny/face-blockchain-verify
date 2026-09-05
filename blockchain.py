@@ -125,6 +125,17 @@ def airdrop(pub_b58, lamports=LAMPORTS_PER_SOL, retries=5):
                        f"{pub_b58} manually from https://faucet.solana.com")
 
 
+def sign_memo_tx(sk, payer_pub, blockhash, memo_text):
+    """Assemble a fully-signed legacy transaction (wire format).
+
+    Wire layout: [num_signatures: u8][signatures][message]. The leading
+    count byte is required — omitting it makes nodes reject the bytes
+    with 'invalid transaction discriminator'.
+    """
+    msg = _build_memo_tx(payer_pub, blockhash, memo_text)
+    return bytes([1]) + sk.sign(msg).signature + msg
+
+
 def _build_memo_tx(payer_pub, blockhash, memo_text):
     memo_prog = _b58decode(MEMO_PROGRAM)
     accounts = [payer_pub, memo_prog]
@@ -152,9 +163,7 @@ def send_memo(memo_text, keypair_path, timeout=90):
     if balance(payer) < 5000:
         airdrop(payer)
     bh = _rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"]
-    msg = _build_memo_tx(pub, bh, memo_text)
-    sig_bytes = sk.sign(msg).signature
-    tx = base64.b64encode(sig_bytes + msg).decode()
+    tx = base64.b64encode(sign_memo_tx(sk, pub, bh, memo_text)).decode()
     res = _rpc("sendTransaction", [tx, {"encoding": "base64",
                                         "skipPreflight": False}],
                timeout=timeout)

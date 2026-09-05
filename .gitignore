@@ -4,3 +4,5 @@ __pycache__/
 .models/
 out/
 out_demo/
+out_serpapi/
+bench_results.json

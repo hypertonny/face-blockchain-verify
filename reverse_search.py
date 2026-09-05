@@ -167,41 +167,52 @@ def yandex_reverse_search(image_url, timeout=60):
 
 
 def serpapi_lens_search(image_url, timeout=60):
-    """Genuine Google Lens results via SerpApi. Needs SERPAPI_API_KEY."""
+    """Genuine Google Lens results via SerpApi. Needs SERPAPI_API_KEY.
+
+    Single call with type=all returns exact_matches + visual_matches
+    (docs: serpapi.com/google-lens-api). Cached repeat queries are free.
+    """
     key = os.environ.get("SERPAPI_API_KEY", "")
     if not key:
         raise RuntimeError("SERPAPI_API_KEY not set")
     r = requests.get("https://serpapi.com/search.json", params={
-        "engine": "google_lens", "url": image_url, "api_key": key,
+        "engine": "google_lens", "url": image_url, "type": "all",
+        "hl": "en", "api_key": key,
     }, timeout=timeout)
     r.raise_for_status()
     data = r.json()
+    if data.get("error"):
+        raise RuntimeError(f"serpapi: {data['error']}")
     out = []
-    for m in data.get("visual_matches", []):
+    for m in data.get("exact_matches", []) + data.get("visual_matches", []):
+        link = m.get("link", "")
+        if not link:
+            continue
         out.append({
             "title": m.get("title", ""),
-            "page_url": m.get("link", ""),
-            "domain": urllib.parse.urlparse(
-                m.get("link", "")).netloc,
-            "image_url": m.get("thumbnail", ""),
+            "page_url": link,
+            "domain": urllib.parse.urlparse(link).netloc,
+            # Full-size match image preferred (face verification), else thumb.
+            "image_url": m.get("image", "") or m.get("thumbnail", ""),
+            "source": m.get("source", ""),
             "provider": "serpapi-google-lens",
         })
-    return out
+    # De-duplicate by page URL, exact matches first.
+    seen, uniq = set(), []
+    for it in out:
+        if it["page_url"] not in seen:
+            seen.add(it["page_url"])
+            uniq.append(it)
+    return uniq
 
 
-def reverse_search(image_path_or_url, timeout=60):
-    """Full flow: publish (if local) -> live reverse search -> ranked matches.
+def search_url(public_url, timeout=60):
+    """Run provider search on an already-public image URL.
 
-    Returns dict with public_image_url, matches, social_matches, best_match.
+    Returns (matches, provider, errors). SerpApi Lens first (if key),
+    Yandex CBIR fallback. Raises only if both fail — caller decides.
     """
-    if re.match(r"^https?://", image_path_or_url):
-        public_url = image_path_or_url
-    else:
-        public_url = publish_image(image_path_or_url, timeout=timeout)
-
-    matches = []
-    provider = None
-    errors = []
+    matches, provider, errors = [], None, []
     if os.environ.get("SERPAPI_API_KEY"):
         try:
             matches = serpapi_lens_search(public_url, timeout=timeout)
@@ -214,6 +225,20 @@ def reverse_search(image_path_or_url, timeout=60):
             provider = provider or "yandex-cbir"
         except Exception as e:  # noqa: BLE001
             errors.append(f"yandex: {e}")
+    return matches, provider, errors
+
+
+def reverse_search(image_path_or_url, timeout=60):
+    """Full flow: publish (if local) -> live reverse search -> ranked matches.
+
+    Returns dict with public_image_url, matches, social_matches, best_match.
+    """
+    if re.match(r"^https?://", image_path_or_url):
+        public_url = image_path_or_url
+    else:
+        public_url = publish_image(image_path_or_url, timeout=timeout)
+
+    matches, provider, errors = search_url(public_url, timeout=timeout)
 
     if not matches:
         raise RuntimeError("reverse search returned no matches: " +

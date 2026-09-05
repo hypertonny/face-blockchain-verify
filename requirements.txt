@@ -1,16 +1,22 @@
-# Core (always needed)
-opencv-python-headless>=4.8
-numpy>=1.24
-requests>=2.31
+# Pinned for reproducible, supply-chain-stable installs.
+opencv-python-headless==5.0.0.93
+numpy==2.5.2
+requests==2.34.2
+
+# Face recognition (ArcFace 512-d tier) + test runner
+insightface==1.0.1
+onnxruntime==1.29.0
+pytest==9.1.1
 
 # Blockchain: Solana devnet client (pure python) + Stellar testnet fallback
-base58>=2.1
-pynacl>=1.5
-stellar-sdk>=12.0
+base58==2.1.1
+PyNaCl==1.6.2
+stellar-sdk==16.1.0
 
-# Optional: best face backend (auto-used if installed)
-# insightface>=0.7
-# onnxruntime>=1.16
+# Optional: demo recording renderer (not needed for the pipeline)
+# asciinema==2.4.0
+# pyte==0.8.2
+# pillow==12.3.0
 
-# Optional: genuine Google Lens via SerpApi (needs SERPAPI_API_KEY)
-# serpapi>=0.1  (plain HTTP is used instead — no SDK required)
+# Optional: genuine Google Lens via SerpApi (needs SERPAPI_API_KEY;
+# plain HTTPS is used — no SDK required)

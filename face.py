@@ -212,12 +212,11 @@ def _pixel_embed(face_bgr):
     return small.astype(np.float32)
 
 
-def detect_and_encode(image_path, out_dir=None):
-    """Detect the largest face and compute its embedding.
+def detect_and_encode_array(img):
+    """Detect the largest face in a BGR array and compute its embedding.
 
     Returns dict with bbox, embedding (list), embedding_sha256, backend.
     """
-    img = _load_image(image_path)
     h, w = img.shape[:2]
     backend = "unknown"
     embedding = None
@@ -303,8 +302,16 @@ def detect_and_encode(image_path, out_dir=None):
         "image_width": w,
         "image_height": h,
     }
+    return result
+
+
+def detect_and_encode(image_path, out_dir=None):
+    """Detect the largest face in an image file (see detect_and_encode_array)."""
+    img = _load_image(image_path)
+    result = detect_and_encode_array(img)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+        x1, y1, x2, y2 = result["bbox"]
         crop = img[y1:y2, x1:x2]
         if crop.size:
             cv2.imwrite(os.path.join(out_dir, "face_crop.jpg"), crop)
