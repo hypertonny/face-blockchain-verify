@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from blockchain import fetch_memo  # noqa: E402
+from polygon import fetch_record as polygon_fetch  # noqa: E402
 from stellar import fetch_record as stellar_fetch  # noqa: E402
 
 
@@ -30,7 +31,14 @@ def main():
                    ensure_ascii=False).encode()).hexdigest()
 
     chain = (record.get("chain") or {}).get("chain", "solana-devnet")
-    if "stellar" in chain:
+    if "polygon" in chain:
+        got = polygon_fetch(args.tx)
+        print("on-chain anchor:", {k: got[k] for k in
+                                   ("contract", "record_hash", "submitter",
+                                    "match_url", "timestamp")})
+        ok = (got["record_hash"] == record.get("record_sha256") == expect
+              and got["stored"]["exists"])
+    elif "stellar" in chain:
         got = stellar_fetch(args.tx)["manage_data"]
         print("on-chain manage_data:", got)
         import base64

@@ -58,7 +58,9 @@ photo, never the embedding.
 | `match_verify.py` | Proves the hit shows the same face | Downloads candidate photo (full image → thumbnail fallback), cosine similarity vs threshold |
 | `blockchain.py` | Solana devnet memo writer (pure Python: `base58`+`pynacl`) | Hand-rolled legacy tx proven byte-equivalent to `solders`; tested against devnet simulate |
 | `stellar.py` | Stellar testnet fallback writer (`stellar-sdk`) | Record hash + post URL in `ManageData` ops, funded via open Friendbot faucet |
-| `verify.py` | Independent re-verification | Recomputes canonical SHA-256, compares with on-chain memo/data → MATCH / MISMATCH |
+| `contracts/FaceVerifyRegistry.sol` | Polygon registry: `anchor(recordHash, matchUrl)` + `get` + event | Stores hash only; first write wins; 1.6 KB bytecode |
+| `polygon.py` / `deploy_polygon.py` | Anchor to / deploy on Polygon Amoy (`web3`) | Deploy script signs locally with your key; key never leaves your machine |
+| `verify.py` | Independent re-verification (all three chains) | Recomputes canonical SHA-256, compares with on-chain data → MATCH / MISMATCH |
 | `bench.py` | Accuracy benchmark over `samples/groundtruth.json` | Reports recall, top-1 by similarity, best similarity per case |
 
 ## Setup
@@ -84,6 +86,9 @@ source ~/.fbv_keys
 |---|---|---|
 | `SERPAPI_API_KEY` | Recommended | Genuine Google Lens (`type=all`: exact + visual matches). Without it, keyless Yandex CBIR is used. Free 250 searches/month. |
 | `SOLANA_RPC_URL` | Recommended | Solana RPC, e.g. `https://devnet.helius-rpc.com/?api-key=KEY`. Defaults to the public devnet endpoint (rate-limited). |
+| `POLYGON_RPC_URL` | Optional | Polygon Amoy RPC (default: public endpoint). |
+| `POLYGON_REGISTRY` | For `--chain polygon` | Deployed `FaceVerifyRegistry` address (from `deploy_polygon.py`). |
+| `POLYGON_PRIVATE_KEY` | For Polygon writes | Anchor/deployer key — local env only, never committed or logged. Reads need no key. |
 | `FBV_SKIP_MODEL_DOWNLOAD=1` | No | Skip the ArcFace bundle; use the offline fallback backend. |
 
 ## Usage
@@ -105,9 +110,16 @@ python pipeline.py --image https://example.com/photo.jpg --out out --no-upload
 # Face + search only (no chain write, no funds needed)
 python pipeline.py --image photo.jpg --out out --skip-chain
 
-# Choose chain explicitly (default auto = Solana, Stellar fallback)
+# Choose chain explicitly (default auto = solana → stellar → polygon if configured)
 python pipeline.py --image photo.jpg --out out --chain solana
 python pipeline.py --image photo.jpg --out out --chain stellar
+python pipeline.py --image photo.jpg --out out --chain polygon  # needs POLYGON_REGISTRY
+
+# Deploy the Polygon registry yourself (you sign locally — key never leaves your machine):
+# 1. fund 0xYOUR_ADDRESS at https://faucet.polygon.technology/ (Amoy)
+# 2. export POLYGON_PRIVATE_KEY="0x..."   # local shell only, never commit
+# 3. python deploy_polygon.py             # prints contract + explorer link
+# 4. export POLYGON_REGISTRY="0x..."      # then --chain polygon works
 
 # Re-verify any record against its on-chain data, any time later
 python verify.py --tx <signature> --record out/record.json
@@ -151,6 +163,12 @@ connections.
 is throttled, the pipeline funds a fresh account via the open Friendbot
 faucet and stores the record SHA-256 (+ post URL) in `ManageData`
 operations. Verify at `https://stellar.expert/explorer/testnet/tx/<hash>`.
+
+**Your own contract: Polygon Amoy** (`contracts/`, `polygon.py`,
+`deploy_polygon.py`). `FaceVerifyRegistry.anchor(recordHash, matchUrl)`
+stores the 32-byte record digest + post URL; first write wins. Deploy with
+`python deploy_polygon.py` (you sign locally), then
+`--chain polygon`. Verify at `https://amoy.polygonscan.com/tx/<hash>`.
 
 ## Requirement coverage
 

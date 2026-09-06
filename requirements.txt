@@ -13,10 +13,12 @@ base58==2.1.1
 PyNaCl==1.6.2
 stellar-sdk==16.1.0
 
-# Optional: demo recording renderer (not needed for the pipeline)
-# asciinema==2.4.0
-# pyte==0.8.2
-# pillow==12.3.0
+# Polygon Amoy registry (contract + deploy + anchor)
+web3==8.0.0
+py-solc-x==2.0.5
+# eth-tester + py-evm: local-chain contract tests only
+eth-tester==0.14.0b1
+py-evm==0.12.1b1
 
 # Optional: genuine Google Lens via SerpApi (needs SERPAPI_API_KEY;
 # plain HTTPS is used — no SDK required)

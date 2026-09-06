@@ -37,6 +37,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from blockchain import send_memo, wait_confirmed  # noqa: E402
 from face import detect_and_encode  # noqa: E402
 from match_verify import DEFAULT_THRESHOLD, verify_match  # noqa: E402
+from polygon import fetch_record as polygon_fetch  # noqa: E402
+from polygon import send_record as polygon_send  # noqa: E402
 from reverse_search import publish_image, search_url  # noqa: E402
 from stellar import send_record as stellar_send  # noqa: E402
 
@@ -119,9 +121,9 @@ def main():
     ap.add_argument("--keypair", default=None,
                     help="solana keypair file (default: <out>/id.json)")
     ap.add_argument("--chain", default="auto",
-                    choices=["auto", "solana", "stellar"],
+                    choices=["auto", "solana", "stellar", "polygon"],
                     help="target chain (default: auto = solana devnet, "
-                         "stellar testnet fallback)")
+                         "then stellar testnet, then polygon amoy)")
     ap.add_argument("--skip-chain", action="store_true",
                     help="run face + search only, skip blockchain write")
     ap.add_argument("--no-upload", action="store_true",
@@ -296,7 +298,27 @@ def main():
                     raise
                 print(f"       solana unavailable ({e}); "
                       "falling back to Stellar testnet ...")
-        if chain is None:
+        if chain is None and args.chain in ("auto", "polygon"):
+            if os.environ.get("POLYGON_REGISTRY"):
+                try:
+                    print("[5/5] anchoring record on Polygon Amoy ...")
+                    chain = polygon_send(record_sha256, best["page_url"])
+                    chain["chain"] = "polygon-amoy"
+                    chain["memo"] = memo
+                    print(f"       tx: {chain['signature']}")
+                    print(f"       explorer: {chain['explorer']}")
+                    print("       CONFIRMED on Polygon Amoy.")
+                    if tried:
+                        chain["fallback_from"] = tried
+                except Exception as e:  # noqa: BLE001
+                    tried.append(f"polygon: {e}")
+                    chain = None
+                    if args.chain == "polygon":
+                        raise
+            elif args.chain == "polygon":
+                raise SystemExit("POLYGON_REGISTRY not set (deploy first: "
+                                 "python deploy_polygon.py)")
+        if chain is None and args.chain in ("auto", "stellar"):
             print("[5/5] writing record to Stellar testnet ...")
             chain = stellar_send(record_sha256, best["page_url"],
                                  os.path.join(args.out, "stellar.json"))
