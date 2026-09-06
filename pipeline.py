@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""Face ID + Blockchain Verification — end-to-end pipeline.
+"""fbv run — Face ID + Blockchain Verification pipeline.
 
   1. Detect + encode face from an input photo (face.py, ArcFace 512-d).
   2. Genuine live reverse-image search of the FULL image and the FACE CROP
      for a real matching social-media post (reverse_search.py).
   3. Face-verify each social candidate (match_verify.py): only a match whose
      photo contains the SAME face (cosine >= threshold) counts as verified.
-  4. Write the verified match digest to Solana devnet (Helius RPC) as an
-     immutable memo, Stellar testnet fallback (blockchain.py, stellar.py).
+  4. Write the verified match digest to Solana devnet (primary), Polygon
+     Amoy registry, or Stellar testnet — tamper-evident, publicly verifiable.
 
 Usage:
-  python pipeline.py --image samples/elon_musk.jpg --out out
-  python pipeline.py --image https://.../photo.jpg --out out --no-upload
-  python pipeline.py --image photo.jpg --out out --strict-social
-  python verify.py --tx <signature> --record out/record.json
+  fbv run --image samples/elon_musk.jpg --out out
+  fbv run --image photo.jpg --out out --strict-social --chain polygon
+  fbv run --image https://example.com/p.jpg --out out --no-upload -v
+  fbv verify --tx <signature> --record out/record.json
 
-Secrets (never committed, never logged):
-  SOLANA_RPC_URL  Solana RPC, e.g. https://devnet.helius-rpc.com/?api-key=KEY
+Secrets (env only — never committed, never logged):
+  SOLANA_RPC_URL   Solana RPC, e.g. https://devnet.helius-rpc.com/?api-key=KEY
   SERPAPI_API_KEY  SerpApi key for genuine Google Lens (else Yandex CBIR)
+  POLYGON_REGISTRY / POLYGON_PRIVATE_KEY  Polygon Amoy anchor writes
 """
 
 import datetime
@@ -30,14 +31,15 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import ui  # noqa: E402
 from blockchain import send_memo, wait_confirmed  # noqa: E402
-from cliutil import die, parser as make_parser  # noqa: E402
+from cliutil import add_verbose, parser as make_parser  # noqa: E402
 from face import detect_and_encode  # noqa: E402
 from match_verify import DEFAULT_THRESHOLD, verify_match  # noqa: E402
-from polygon import fetch_record as polygon_fetch  # noqa: E402
 from polygon import send_record as polygon_send  # noqa: E402
 from reverse_search import publish_image, search_url  # noqa: E402
 from stellar import send_record as stellar_send  # noqa: E402
@@ -76,20 +78,19 @@ def keypair_safe(path, allow_risk=False):
     try:
         r = subprocess.run(["git", "check-ignore", "-q", path],
                            cwd=parent, capture_output=True, timeout=10)
-    except Exception:  # noqa: BLE001 — no git available: allow, warn below
+    except Exception:  # noqa: BLE001 — no git available: allow
         return True
     if r.returncode == 0:
         return True  # git-ignored: safe
-    # Check whether we're inside a repo at all.
     t = subprocess.run(["git", "rev-parse", "--show-toplevel"],
                        cwd=parent, capture_output=True, timeout=10)
     if t.returncode != 0:
         return True  # not a repo: nothing to leak into
     if allow_risk:
-        print("       WARNING: keypair is NOT git-ignored; risk of commit.")
+        ui.warn("keypair is NOT git-ignored; risk of commit.")
         return True
-    die(f"refusing keypair at {path}: not git-ignored (secret leak risk). "
-        "Put it under out/ (ignored) or pass --allow-keypair-risk.")
+    ui.die(f"refusing keypair at {path}: not git-ignored (secret leak risk)",
+           hint="put it under out/ (ignored) or pass --allow-keypair-risk")
 
 
 def merge_matches(*lists):
@@ -104,9 +105,9 @@ def merge_matches(*lists):
     return out
 
 
-def main():
+def main(argv=None, prog=None):
     ap = make_parser(
-        "pipeline",
+        prog or "pipeline",
         "Face ID + blockchain verification: encode a face, find its real "
         "social-media post via live reverse-image search, face-verify it, "
         "and anchor the match on-chain.",
@@ -122,7 +123,7 @@ def main():
     ap.add_argument("--chain", default="auto",
                     choices=["auto", "solana", "stellar", "polygon"],
                     help="target chain (default: auto = solana devnet, "
-                         "then stellar testnet, then polygon amoy)")
+                         "then polygon amoy if configured, then stellar)")
     ap.add_argument("--skip-chain", action="store_true",
                     help="run face + search only, skip blockchain write")
     ap.add_argument("--no-upload", action="store_true",
@@ -136,12 +137,19 @@ def main():
                          f"(default {DEFAULT_THRESHOLD})")
     ap.add_argument("--allow-keypair-risk", action="store_true",
                     help="allow a keypair path git would commit")
-    args = ap.parse_args()
+    add_verbose(ap)
+    args = ap.parse_args(argv)
 
     is_url = args.image.startswith(("http://", "https://"))
     if args.no_upload and not is_url:
-        die("--no-upload requires a public image URL input; "
-            "local files would need publishing.")
+        ui.die("--no-upload requires a public image URL input",
+               hint="local files must be published for reverse search; "
+                    "drop --no-upload or pass an image URL")
+    if is_url:
+        try:
+            guard_url(args.image)
+        except ValueError as e:
+            ui.die(str(e), hint="only public http(s) image URLs are allowed")
 
     os.makedirs(args.out, exist_ok=True)
     keypair = args.keypair or os.path.join(args.out, "id.json")
@@ -149,64 +157,84 @@ def main():
         keypair_safe(keypair, args.allow_keypair_risk)
     t0 = datetime.datetime.now(datetime.timezone.utc)
     wall = time.monotonic()
+    laps, last = [], [wall]
 
-    print(f"Image : {args.image}")
+    def lap():
+        now = time.monotonic()
+        laps.append(now - last[0])
+        last[0] = now
+
+    print(f"{ui.bold('fbv run')} {ui.c(args.image, 'bold')} "
+          f"{ui.ARROW} {args.out}")
 
     # Resolve image bytes.
     local = args.image
     if is_url:
         import urllib.request
-        try:
-            guard_url(args.image)
-        except ValueError as e:
-            die(str(e))
         local = os.path.join(args.out, "input_downloaded.jpg")
         urllib.request.urlretrieve(args.image, local)
-
     input_sha256 = sha256_file(local)
+    if args.verbose:
+        ui.info(f"input sha256 {input_sha256}")
 
     # Step 1: face detect + encode.
-    print("[1/4] Face ...", flush=True)
+    ui.step(1, 4, "Face — detect + encode")
     face = detect_and_encode(local, out_dir=args.out)
-    print(f"      {face['backend']}, {face['embedding_dim']}-d embedding")
+    ui.info(f"{face['backend']} · {face['embedding_dim']}-d · "
+            f"bbox {face['bbox']} · score {face['det_score']:.3f}")
+    if args.verbose:
+        ui.info(f"embedding sha256 {face['embedding_sha256']}")
+    lap()
 
-    # Step 2: genuine reverse-image search (full image + face crop).
-    print("[2/4] Search ...", flush=True)
+    # Step 2: genuine reverse-image search (full image + face crop, parallel).
+    ui.step(2, 4, "Search — live reverse-image search (full + face crop)")
     import reverse_search as rs
+    crop_src = os.path.join(args.out, "face_crop.jpg")
     if is_url:
-        full_url, crop_src = args.image, os.path.join(args.out,
-                                                      "face_crop.jpg")
+        full_url = crop_url = args.image
     else:
         full_url = publish_image(local)
-        crop_src = os.path.join(args.out, "face_crop.jpg")
-    full_matches, provider, errors = search_url(full_url)
-    crop_matches, crop_provider, crop_errors = [], provider, []
-    if os.path.exists(crop_src):
-        try:
-            crop_url = full_url if is_url else publish_image(crop_src)
-            crop_matches, crop_provider, crop_errors = search_url(crop_url)
-            provider = provider or crop_provider
-        except Exception as e:  # noqa: BLE001
-            crop_errors.append(str(e))
+        crop_url = publish_image(crop_src) if os.path.exists(crop_src) else None
+    if args.verbose:
+        ui.info(f"published {full_url}")
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_full = ex.submit(search_url, full_url)
+        fut_crop = (ex.submit(search_url, crop_url)
+                    if crop_url and crop_url != full_url else None)
+        full_matches, provider, errors = fut_full.result()
+        crop_matches, crop_errors = [], []
+        if fut_crop:
+            crop_matches, _, crop_errors = fut_crop.result()
     matches = merge_matches((full_matches, "full"), (crop_matches, "crop"))
     if not matches:
-        die("reverse search returned no matches: " +
-            " | ".join(errors + crop_errors))
+        ui.die("reverse search returned no matches",
+               hint=" | ".join(errors + crop_errors)
+               or "try another photo, or set SERPAPI_API_KEY")
     social = [m for m in matches if rs._is_social(m)]
-    print(f"      {provider}: {len(matches)} matches, {len(social)} social posts")
+    ui.info(f"{provider} · {len(matches)} matches · {len(social)} social")
+    lap()
 
-    # Step 3: face-verify social candidates, rank verified first.
-    print("[3/4] Verify ...", flush=True)
-    for i, m in enumerate(social[:VERIFY_TOP_N], 1):
-        v = verify_match(face["embedding"],
-                         [m.get("image_url", ""), m.get("thumbnail_url", "")],
-                         threshold=args.threshold)
-        m["verification"] = v
+    # Step 3: face-verify social candidates (parallel downloads), rank.
+    ui.step(3, 4, f"Verify — face-check top {min(VERIFY_TOP_N, len(social))} "
+                  "social candidates")
+    cands = social[:VERIFY_TOP_N]
+
+    def _v(m):
+        m["verification"] = verify_match(
+            face["embedding"],
+            [m.get("image_url", ""), m.get("thumbnail_url", "")],
+            threshold=args.threshold)
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(_v, cands))
+    for m in cands:
+        v = m["verification"]
         sim = v.get("similarity")
-        sim_s = f"{sim:.4f}" if sim is not None else "n/a   "
-        mark = "VERIFIED" if v["verified"] else "rejected"
-        print(f"      #{i} [{mark}] {sim_s}  "
-              f"{m['domain'][:32]:32} {m['page_url'][:60]}")
+        sim_s = f"{sim:.4f}" if sim is not None else "  n/a"
+        mark = (ui.c(ui.OK, "green", "bold") if v["verified"]
+                else ui.c(ui.FAIL, "red"))
+        print(f"   {mark} {sim_s}  {m['domain'][:30]:30} "
+              f"{m['page_url'][:60]}")
     verified = [m for m in social if m.get("verification", {}).get("verified")]
     verified.sort(key=lambda m: m["verification"]["similarity"],
                   reverse=True)
@@ -215,11 +243,13 @@ def main():
     ranked = verified + unverified + [m for m in matches if m not in social]
     best = ranked[0]
     best_ver = best.get("verification", {})
-    print(f"      {len(verified)}/{len(social)} same-face, "
-          f"best: {best['domain']} (sim {best_ver.get('similarity')})")
+    ui.info(f"{len(verified)}/{len(social)} same-face verified")
+    lap()
 
     if args.strict_social and not best_ver.get("verified"):
-        die("no face-verified social match (--strict-social)")
+        ui.die("no face-verified social match (--strict-social)",
+               hint=f"lower --threshold (now {args.threshold}) or drop "
+                    "--strict-social")
     with open(os.path.join(args.out, "matches.json"), "w") as f:
         json.dump(ranked[:50], f, indent=2, ensure_ascii=False)
 
@@ -251,13 +281,13 @@ def main():
     with open(os.path.join(args.out, "record.json"), "w") as f:
         json.dump(record, f, indent=2, ensure_ascii=False)
 
-    # Step 4: blockchain write (Solana devnet primary, Stellar fallback).
+    # Step 4: blockchain write.
     chain = None
     if not args.skip_chain:
+        ui.step(4, 4, f"Chain — anchor record ({args.chain})")
         memo = (f"FACEVERIFY|{record_sha256}|{best['page_url']}|"
                 f"{face['embedding_sha256'][:16]}")
         tried = []
-        print("[4/4] Chain ...", flush=True)
         if args.chain in ("auto", "solana"):
             try:
                 chain = send_memo(memo, keypair)
@@ -268,6 +298,7 @@ def main():
                 chain = None
                 if args.chain == "solana":
                     raise
+                ui.warn(f"solana unavailable: {e}")
         if chain is None and args.chain in ("auto", "polygon"):
             if os.environ.get("POLYGON_REGISTRY"):
                 try:
@@ -281,9 +312,11 @@ def main():
                     chain = None
                     if args.chain == "polygon":
                         raise
+                    ui.warn(f"polygon unavailable: {e}")
             elif args.chain == "polygon":
-                die("POLYGON_REGISTRY not set (deploy first: "
-                    "python deploy_polygon.py)")
+                ui.die("POLYGON_REGISTRY not set",
+                       hint="deploy first: fbv deploy (then export "
+                            "POLYGON_REGISTRY=0x...)")
         if chain is None and args.chain in ("auto", "stellar"):
             chain = stellar_send(record_sha256, best["page_url"],
                                  os.path.join(args.out, "stellar.json"))
@@ -291,28 +324,38 @@ def main():
             chain["memo"] = memo
             if tried:
                 chain["fallback_from"] = tried
-        print(f"      {chain['chain']}: {chain['signature'][:16]}... CONFIRMED")
+        ui.ok(f"{chain['chain']} · CONFIRMED")
         record["chain"] = chain
         with open(os.path.join(args.out, "record.json"), "w") as f:
             json.dump(record, f, indent=2, ensure_ascii=False)
         with open(os.path.join(args.out, "tx.json"), "w") as f:
             json.dump(chain, f, indent=2)
+        lap()
     else:
-        print("[4/4] Chain ... skipped (--skip-chain)")
+        ui.step(4, 4, "Chain — skipped (--skip-chain)")
 
+    # Summary.
     total = time.monotonic() - wall
     print()
-    print(f"Best    : [{best['domain']}] sim {best_ver.get('similarity')} "
-          f"{'(VERIFIED)' if best_ver.get('verified') else '(UNVERIFIED)'}")
-    print(f"          {best['page_url']}")
-    print(f"Record  : {record_sha256[:24]}... ({args.out}/record.json)")
+    if best_ver.get("verified"):
+        print(f"{ui.c(ui.OK + ' VERIFIED SAME-FACE MATCH', 'green', 'bold')}")
+    else:
+        print(f"{ui.c(ui.WARN + ' UNVERIFIED MATCH', 'yellow', 'bold')} "
+              f"{ui.dim('(use --strict-social to require verification)')}")
+    ui.info(f"post     {best['page_url']}")
+    ui.info(f"sim      {best_ver.get('similarity')} "
+            f"(threshold {args.threshold})")
     if chain:
-        print(f"Tx      : {chain['signature']}")
-        print(f"Explorer: {chain['explorer']}")
-        print(f"Verify  : python verify.py --tx {chain['signature']} "
-              f"--record {args.out}/record.json")
-    print(f"Status  : {'MATCH on ' + chain['chain'] if chain else 'done (no chain write)'} "
-          f"({total:.0f}s)")
+        ui.info(f"chain    {chain['chain']}")
+        ui.info(f"tx       {chain['signature']}")
+        ui.info(f"explorer {chain['explorer']}")
+        ui.info(f"verify   fbv verify --tx {chain['signature']} "
+                f"--record {args.out}/record.json")
+    if args.verbose:
+        names = ["face", "search", "verify", "chain"]
+        ui.info("timings " + " · ".join(
+            f"{n} {d:.1f}s" for n, d in zip(names, laps)))
+    ui.info(f"time     {total:.0f}s")
 
 
 if __name__ == "__main__":

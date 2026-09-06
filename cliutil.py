@@ -1,6 +1,7 @@
 """Shared CLI polish: version, examples epilogs, usage-error exits."""
 import argparse
-import sys
+
+import ui
 
 VERSION = "1.0.0"
 
@@ -16,7 +17,11 @@ def parser(prog, description, examples=""):
     return ap
 
 
-def die(msg, code=2):
+def add_verbose(ap):
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="show extra detail (hashes, timings, published URLs)")
+
+
+def die(msg, hint=None, code=2):
     """Usage/validation errors exit 2 (argparse convention); runtime is 1."""
-    print(f"error: {msg}", file=sys.stderr)
-    raise SystemExit(code)
+    ui.die(msg, hint=hint, code=code)

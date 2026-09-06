@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
-"""Deploy FaceVerifyRegistry to Polygon Amoy. YOU sign locally.
+"""fbv deploy — deploy FaceVerifyRegistry to Polygon Amoy. YOU sign locally.
 
-The deployer's private key NEVER leaves this machine: it is read from the
-POLYGON_PRIVATE_KEY env var at runtime, used once to sign, and never
-printed, logged, or committed.
-
-Steps:
-  1. Fund your deployer address with free Amoy MATIC:
-       https://faucet.polygon.technology/  (select Amoy)
-  2. export POLYGON_PRIVATE_KEY="0x..."   # your key, local shell only
-     export POLYGON_RPC_URL="https://polygon-amoy-bor-rpc.publicnode.com"  # optional
-  3. python deploy_polygon.py
-  4. Share the printed contract address -> set POLYGON_REGISTRY for anchoring:
-       export POLYGON_REGISTRY="0x..."
-       python pipeline.py --image photo.jpg --out out --chain polygon
+The deployer's private key never leaves this machine: it is read from
+POLYGON_PRIVATE_KEY at runtime, used to sign, and never printed, logged, or
+committed.
 """
 import json
 import os
@@ -22,40 +12,40 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from cliutil import die, parser as make_parser  # noqa: E402
+import ui  # noqa: E402
+from cliutil import parser as make_parser  # noqa: E402
 from polygon import CHAIN_ID, compiled, w3  # noqa: E402
-from web3 import Web3  # noqa: E402
 
 
-def main():
+def main(argv=None, prog=None):
     ap = make_parser(
-        "deploy_polygon",
-        "Deploy FaceVerifyRegistry to Polygon Amoy. YOU sign locally: the "
-        "key is read from POLYGON_PRIVATE_KEY at runtime and never printed, "
-        "logged, or committed.",
+        prog or "deploy_polygon",
+        "Deploy FaceVerifyRegistry to Polygon Amoy. You sign locally with "
+        "POLYGON_PRIVATE_KEY; the key is never printed or committed.",
         "  export POLYGON_PRIVATE_KEY=0x...   # local shell only\n"
-        "  python deploy_polygon.py\n"
+        "  deploy_polygon\n"
         "  export POLYGON_REGISTRY=0x...      # printed contract address")
     ap.add_argument("--rpc-url", default=None,
                     help="Polygon Amoy RPC (default: POLYGON_RPC_URL env or "
                          "public endpoint)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     key = os.environ.get("POLYGON_PRIVATE_KEY", "")
     if not key:
-        die("POLYGON_PRIVATE_KEY not set. export it locally, fund the "
-            "address at https://faucet.polygon.technology/ (Amoy), re-run.")
+        ui.die("POLYGON_PRIVATE_KEY not set",
+               hint="fund your address at https://faucet.polygon.technology/ "
+                    "(Amoy), then export the key locally and retry")
     web3 = w3(args.rpc_url)
     acct = web3.eth.account.from_key(key)
-    print(f"network   : Polygon Amoy (chain {CHAIN_ID})")
-    print(f"deployer  : {acct.address}")
+    ui.step(1, 2, "Check Polygon Amoy deployer")
+    ui.info(f"address {acct.address}")
     bal = web3.eth.get_balance(acct.address)
-    print(f"balance   : {web3.from_wei(bal, 'ether')} MATIC")
+    ui.info(f"balance {web3.from_wei(bal, 'ether')} MATIC")
     if bal == 0:
-        sys.exit("balance is zero — fund the deployer at "
-                 "https://faucet.polygon.technology/ first.")
-    # Never log the key — show only the derived address (already printed).
-    del key
+        ui.die("deployer balance is zero",
+               hint="fund this address at https://faucet.polygon.technology/ "
+                    "(select Amoy) and retry")
+    del key  # never retain / print it after deriving the local signer
 
     comp = compiled()
     factory = web3.eth.contract(abi=comp["abi"], bytecode=comp["bytecode"])
@@ -68,18 +58,16 @@ def main():
         "maxPriorityFeePerGas": web3.eth.max_priority_fee,
     })
     tx["gas"] = web3.eth.estimate_gas(tx)
-    print(f"est. gas  : {tx['gas']} "
-          f"(~{web3.from_wei(tx['gas'] * tx['maxFeePerGas'], 'ether')} MATIC max)")
+    ui.step(2, 2, "Deploy FaceVerifyRegistry")
+    ui.info(f"estimate {tx['gas']} gas · max "
+            f"{web3.from_wei(tx['gas'] * tx['maxFeePerGas'], 'ether')} MATIC")
     signed = acct.sign_transaction(tx)
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction).hex()
-    print(f"deploy tx : {tx_hash}")
-    print("waiting for confirmation ...")
+    ui.info(f"tx {tx_hash}")
     receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=600)
     addr = receipt.get("contractAddress")
     if receipt.get("status") != 1 or not addr:
-        sys.exit(f"deploy failed: {receipt}")
-    print(f"CONTRACT  : {addr}")
-    print(f"EXPLORER  : https://amoy.polygonscan.com/address/{addr}")
+        ui.die("contract deployment reverted", hint=f"inspect tx {tx_hash}")
     os.makedirs("out", exist_ok=True)
     with open("out/polygon_deploy.json", "w") as f:
         json.dump({"network": "polygon-amoy", "chain_id": CHAIN_ID,
@@ -87,10 +75,10 @@ def main():
                    "deploy_tx": tx_hash,
                    "time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                              time.gmtime())}, f, indent=2)
-    print("saved     : out/polygon_deploy.json (git-ignored)")
-    print("next      : export POLYGON_REGISTRY="
-          f"{addr} && python pipeline.py --image <photo> --out out "
-          "--chain polygon")
+    ui.ok("FaceVerifyRegistry deployed")
+    ui.info(f"contract {addr}")
+    ui.info(f"explorer https://amoy.polygonscan.com/address/{addr}")
+    ui.info(f"next     export POLYGON_REGISTRY={addr}")
 
 
 if __name__ == "__main__":

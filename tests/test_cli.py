@@ -43,3 +43,14 @@ def test_compile_help():
         [PY, os.path.join(HERE, "contracts", "compile_contracts.py"),
          "--help"], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and "usage: compile_contracts" in r.stdout
+
+
+def test_fbv_dispatcher():
+    r = run("fbv.py", "--help")
+    assert r.returncode == 0 and "usage: fbv" in r.stdout and "deploy" in r.stdout
+    r = run("fbv.py", "--version")
+    assert r.returncode == 0 and r.stdout.strip() == "fbv 1.0.0"
+    r = run("fbv.py", "run", "--version")
+    assert r.returncode == 0 and "fbv run 1.0.0" in r.stdout
+    r = run("fbv.py", "unknown")
+    assert r.returncode == 2 and "unknown command" in r.stderr
