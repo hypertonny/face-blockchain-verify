@@ -9,13 +9,13 @@ social candidates, report the rank of the expected URL and best similarity.
 Writes bench_results.json. Consumes SerpApi quota when SERPAPI_API_KEY is
 set (2 searches/image); use --provider yandex to stay free.
 """
-import argparse
 import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cliutil import parser as make_parser  # noqa: E402
 from face import detect_and_encode  # noqa: E402
 from match_verify import verify_match  # noqa: E402
 import reverse_search as rs  # noqa: E402
@@ -60,8 +60,14 @@ def run_case(image, expected, threshold, top_n):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--groundtruth", default="samples/groundtruth.json")
+    ap = make_parser(
+        "bench",
+        "Accuracy benchmark over samples/groundtruth.json: encode each "
+        "photo, reverse-search it, face-verify candidates, and report the "
+        "rank of the expected URL plus best similarity.",
+        "  bench\n  bench --threshold 0.5 --top-n 12 --out bench_results.json")
+    ap.add_argument("--groundtruth", default="samples/groundtruth.json",
+                    help="JSON list of {image, expected_post_url}")
     ap.add_argument("--threshold", type=float, default=0.45)
     ap.add_argument("--top-n", type=int, default=8)
     ap.add_argument("--out", default="bench_results.json")

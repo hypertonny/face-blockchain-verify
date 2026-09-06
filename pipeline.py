@@ -20,7 +20,6 @@ Secrets (never committed, never logged):
   SERPAPI_API_KEY  SerpApi key for genuine Google Lens (else Yandex CBIR)
 """
 
-import argparse
 import datetime
 import hashlib
 import ipaddress
@@ -35,6 +34,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from blockchain import send_memo, wait_confirmed  # noqa: E402
+from cliutil import die, parser as make_parser  # noqa: E402
 from face import detect_and_encode  # noqa: E402
 from match_verify import DEFAULT_THRESHOLD, verify_match  # noqa: E402
 from polygon import fetch_record as polygon_fetch  # noqa: E402
@@ -96,8 +96,7 @@ def keypair_safe(path, allow_risk=False):
     if allow_risk:
         print("       WARNING: keypair is NOT git-ignored; risk of commit.")
         return True
-    raise SystemExit(
-        f"refusing keypair at {path}: not git-ignored (secret leak risk). "
+    die(f"refusing keypair at {path}: not git-ignored (secret leak risk). "
         "Put it under out/ (ignored) or pass --allow-keypair-risk.")
 
 
@@ -114,7 +113,15 @@ def merge_matches(*lists):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Face ID + blockchain verification")
+    ap = make_parser(
+        "pipeline",
+        "Face ID + blockchain verification: encode a face, find its real "
+        "social-media post via live reverse-image search, face-verify it, "
+        "and anchor the match on-chain.",
+        "  pipeline --image samples/elon_musk.jpg --out out\n"
+        "  pipeline --image photo.jpg --out out --strict-social --chain polygon\n"
+        "  pipeline --image https://example.com/p.jpg --out out --no-upload\n"
+        "  pipeline --image photo.jpg --out out --skip-chain")
     ap.add_argument("--image", required=True,
                     help="local photo path or public image URL")
     ap.add_argument("--out", default="out", help="output directory")
@@ -141,8 +148,8 @@ def main():
 
     is_url = args.image.startswith(("http://", "https://"))
     if args.no_upload and not is_url:
-        raise SystemExit("--no-upload requires a public image URL input; "
-                         "local files would need publishing.")
+        die("--no-upload requires a public image URL input; "
+            "local files would need publishing.")
 
     os.makedirs(args.out, exist_ok=True)
     keypair = args.keypair or os.path.join(args.out, "id.json")
@@ -165,7 +172,10 @@ def main():
     local = args.image
     if is_url:
         import urllib.request
-        guard_url(args.image)
+        try:
+            guard_url(args.image)
+        except ValueError as e:
+            die(str(e))
         local = os.path.join(args.out, "input_downloaded.jpg")
         urllib.request.urlretrieve(args.image, local)
         tick("[1/5] downloaded input")
@@ -208,8 +218,8 @@ def main():
             print(f"       crop search failed: {e}")
     matches = merge_matches((full_matches, "full"), (crop_matches, "crop"))
     if not matches:
-        raise SystemExit("reverse search returned no matches: " +
-                         " | ".join(errors + crop_errors))
+        die("reverse search returned no matches: " +
+            " | ".join(errors + crop_errors))
     social = [m for m in matches if rs._is_social(m)]
     tick("[3/5] live reverse-image search done "
          f"({provider}, {len(matches)} matches, {len(social)} social)")
@@ -241,8 +251,7 @@ def main():
           f"sim={best_ver.get('similarity')}")
 
     if args.strict_social and not best_ver.get("verified"):
-        raise SystemExit("exit 2: no face-verified social match "
-                         "(--strict-social)")
+        die("no face-verified social match (--strict-social)")
     with open(os.path.join(args.out, "matches.json"), "w") as f:
         json.dump(ranked[:50], f, indent=2, ensure_ascii=False)
 
@@ -316,8 +325,8 @@ def main():
                     if args.chain == "polygon":
                         raise
             elif args.chain == "polygon":
-                raise SystemExit("POLYGON_REGISTRY not set (deploy first: "
-                                 "python deploy_polygon.py)")
+                die("POLYGON_REGISTRY not set (deploy first: "
+                    "python deploy_polygon.py)")
         if chain is None and args.chain in ("auto", "stellar"):
             print("[5/5] writing record to Stellar testnet ...")
             chain = stellar_send(record_sha256, best["page_url"],

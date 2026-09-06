@@ -22,17 +22,30 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from cliutil import die, parser as make_parser  # noqa: E402
 from polygon import CHAIN_ID, compiled, w3  # noqa: E402
 from web3 import Web3  # noqa: E402
 
 
 def main():
+    ap = make_parser(
+        "deploy_polygon",
+        "Deploy FaceVerifyRegistry to Polygon Amoy. YOU sign locally: the "
+        "key is read from POLYGON_PRIVATE_KEY at runtime and never printed, "
+        "logged, or committed.",
+        "  export POLYGON_PRIVATE_KEY=0x...   # local shell only\n"
+        "  python deploy_polygon.py\n"
+        "  export POLYGON_REGISTRY=0x...      # printed contract address")
+    ap.add_argument("--rpc-url", default=None,
+                    help="Polygon Amoy RPC (default: POLYGON_RPC_URL env or "
+                         "public endpoint)")
+    args = ap.parse_args()
+
     key = os.environ.get("POLYGON_PRIVATE_KEY", "")
     if not key:
-        sys.exit("POLYGON_PRIVATE_KEY not set. export it locally (see "
-                 "header), fund the address at "
-                 "https://faucet.polygon.technology/, then re-run.")
-    web3 = w3()
+        die("POLYGON_PRIVATE_KEY not set. export it locally, fund the "
+            "address at https://faucet.polygon.technology/ (Amoy), re-run.")
+    web3 = w3(args.rpc_url)
     acct = web3.eth.account.from_key(key)
     print(f"network   : Polygon Amoy (chain {CHAIN_ID})")
     print(f"deployer  : {acct.address}")
