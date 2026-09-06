@@ -16,13 +16,13 @@ import reverse_search as rs  # noqa: E402
 def run_case(image, expected, threshold, top_n):
     face = detect_and_encode(image, out_dir=None)
     full_url = rs.publish_image(image)
-    full, provider, _ = rs.search_url(full_url)
+    full, provider, _, identity = rs.search_url(full_url)
     x1, y1, x2, y2 = face["bbox"]
     import cv2
     img = cv2.imread(image)
     crop_path = "/tmp/opencode/bench_crop.jpg"
     cv2.imwrite(crop_path, img[y1:y2, x1:x2])
-    crop, _, _ = rs.search_url(rs.publish_image(crop_path))
+    crop, _, _, _ = rs.search_url(rs.publish_image(crop_path))
     seen, merged = set(), []
     for m in full + crop:
         if m["page_url"] not in seen:
@@ -48,6 +48,7 @@ def run_case(image, expected, threshold, top_n):
                          == expected.rstrip("/"))
     return {"image": image, "expected": expected, "provider": provider,
             "backend": face["backend"], "dim": face["embedding_dim"],
+            "identity_person": identity.get("person", ""),
             "num_matches": len(merged), "num_social": len(social),
             "expected_rank": rank, "top1": rank == 1, "top5": rank is not None
             and rank <= 5, "top_by_similarity": top_by_similarity,

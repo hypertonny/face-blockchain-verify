@@ -204,19 +204,31 @@ def serpapi_lens_search(image_url, timeout=60):
         if it["page_url"] not in seen:
             seen.add(it["page_url"])
             uniq.append(it)
-    return uniq
+    # Identity hint: Lens' top related query for a face photo is usually
+    # the person's name (same response — costs no extra quota).
+    identity = {"person": "", "queries": []}
+    for rc in data.get("related_content", []) or []:
+        q = (rc.get("query") or "").strip()
+        if q and q not in identity["queries"]:
+            identity["queries"].append(q)
+    identity["queries"] = identity["queries"][:3]
+    identity["person"] = identity["queries"][0] if identity["queries"] else ""
+    return uniq, identity
 
 
 def search_url(public_url, timeout=60):
     """Run provider search on an already-public image URL.
 
-    Returns (matches, provider, errors). SerpApi Lens first (if key),
-    Yandex CBIR fallback. Raises only if both fail — caller decides.
+    Returns (matches, provider, errors, identity) where identity is
+    {"person": ..., "queries": [...]} (Lens only; {} otherwise).
+    SerpApi Lens first (if key), Yandex CBIR fallback.
     """
     matches, provider, errors = [], None, []
+    identity = {"person": "", "queries": []}
     if os.environ.get("SERPAPI_API_KEY"):
         try:
-            matches = serpapi_lens_search(public_url, timeout=timeout)
+            matches, identity = serpapi_lens_search(public_url,
+                                                    timeout=timeout)
             provider = "serpapi-google-lens"
         except Exception as e:  # noqa: BLE001
             errors.append(f"serpapi: {e}")
@@ -226,7 +238,7 @@ def search_url(public_url, timeout=60):
             provider = provider or "yandex-cbir"
         except Exception as e:  # noqa: BLE001
             errors.append(f"yandex: {e}")
-    return matches, provider, errors
+    return matches, provider, errors, identity
 
 
 def reverse_search(image_path_or_url, timeout=60):
@@ -239,7 +251,8 @@ def reverse_search(image_path_or_url, timeout=60):
     else:
         public_url = publish_image(image_path_or_url, timeout=timeout)
 
-    matches, provider, errors = search_url(public_url, timeout=timeout)
+    matches, provider, errors, identity = search_url(
+        public_url, timeout=timeout)
 
     if not matches:
         raise RuntimeError("reverse search returned no matches: " +
@@ -256,5 +269,6 @@ def reverse_search(image_path_or_url, timeout=60):
         "matches": matches[:50],
         "best_match": best,
         "is_social_match": bool(social),
+        "identity": identity,
         "provider_errors": errors,
     }

@@ -208,10 +208,13 @@ def main(argv=None, prog=None):
         fut_full = ex.submit(search_url, full_url)
         fut_crop = (ex.submit(search_url, crop_url)
                     if crop_url and crop_url != full_url else None)
-        full_matches, provider, errors = fut_full.result()
+        full_matches, provider, errors, identity = fut_full.result()
         crop_matches, crop_errors = [], []
         if fut_crop:
-            crop_matches, _, crop_errors = fut_crop.result()
+            crop_matches, _, crop_errors, crop_identity = fut_crop.result()
+            if not identity.get("person"):
+                identity = crop_identity
+    person = identity.get("person", "")
     matches = merge_matches((full_matches, "full"), (crop_matches, "crop"))
     if not matches:
         ui.die("reverse search returned no matches",
@@ -219,11 +222,13 @@ def main(argv=None, prog=None):
                or "try another photo, or set SERPAPI_API_KEY")
     social = [m for m in matches if rs._is_social(m)]
     ui.info(f"{provider} · {len(matches)} matches · {len(social)} social")
+    if person:
+        ui.info(f"identified as {person} (Lens identity hint)")
     lap()
 
     # Step 3: face-verify social candidates (parallel downloads), rank.
-    ui.step(3, 4, f"Verify — face-check top {min(VERIFY_TOP_N, len(social))} "
-                  "social candidates")
+    ui.step(3, 4, f"Verify — threshold {args.threshold} · "
+                  f"top {min(VERIFY_TOP_N, len(social))} social candidates")
     cands = social[:VERIFY_TOP_N]
 
     def _v(m):
@@ -234,14 +239,17 @@ def main(argv=None, prog=None):
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(_v, cands))
-    print(f"   {'':4} {'sim':>6}  {'domain':18}  post")
+    if person:
+        print(f"   person  {person}")
+    print(f"   {'':7} {'sim':>6}  {'domain':18}  post  "
+          f"{ui.dim('(threshold ' + str(args.threshold) + ')')}")
     for m in cands:
         v = m["verification"]
         sim = v.get("similarity")
         sim_s = f"{sim:.4f}" if sim is not None else "  n/a "
         mark = (ui.c(ui.OK, "green", "bold") if v["verified"]
                 else ui.c(ui.FAIL, "red"))
-        print(f"   {mark} {sim_s}  {m['domain'][:18]:18}  "
+        print(f"   {mark}      {sim_s}  {m['domain'][:18]:18}  "
               f"{short_post(m['page_url'])}")
     verified = [m for m in social if m.get("verification", {}).get("verified")]
     verified.sort(key=lambda m: m["verification"]["similarity"],
@@ -275,6 +283,7 @@ def main(argv=None, prog=None):
             "verified_match": bool(best_ver.get("verified")),
             "similarity": best_ver.get("similarity"),
             "threshold": args.threshold,
+            "identity": identity,
             "best_match": {k: best.get(k) for k in
                            ("title", "page_url", "domain", "image_url",
                             "thumbnail_url", "provider", "searched_as")},
@@ -347,10 +356,13 @@ def main(argv=None, prog=None):
     print()
     if best_ver.get("verified"):
         print(f"{ui.c(ui.OK + ' VERIFIED SAME-FACE MATCH', 'green', 'bold')}"
-              f"  sim {best_ver.get('similarity')}")
+              f"  sim {best_ver.get('similarity')} "
+              f"(threshold {args.threshold})")
     else:
         print(f"{ui.c(ui.WARN + ' UNVERIFIED MATCH', 'yellow', 'bold')} "
               f"{ui.dim('(use --strict-social to require verification)')}")
+    if person:
+        ui.info(f"person   {person} (Lens identity hint)")
     ui.info(f"post     {short_post(best['page_url'], 76)}")
     if chain:
         ui.info(f"chain    {chain['chain']} · CONFIRMED")
