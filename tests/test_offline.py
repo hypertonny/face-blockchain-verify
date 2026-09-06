@@ -97,7 +97,8 @@ def test_require_face_raises_on_blank(monkeypatch):
     assert r["backend"] == "fallback-center-crop+pixel-embedding"
 
 
-def test_tamper_detected():    canonical = {"face": {"embedding_sha256": "a" * 64}}
+def test_tamper_detected():
+    canonical = {"face": {"embedding_sha256": "a" * 64}}
     good = hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     tampered = dict(canonical, face={"embedding_sha256": "b" * 64})
