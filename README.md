@@ -1,123 +1,230 @@
 # Face ID + Blockchain Verification
 
-Pipeline that **detects + encodes a face** from a photo (ArcFace 512-d),
-finds a **real matching social-media post via genuine live reverse-image
-search**, **face-verifies** the match (same face, cosine ≥ threshold), and
-writes that match to a **blockchain as a tamper-evident, verifiable record**.
+Detect and encode a face from a photo, find a **real matching social-media
+post via genuine live reverse-image search**, face-verify it is the **same
+face**, and write the match to a **blockchain as a tamper-evident,
+verifiable record**.
 
 No website, no hosting — the pipeline itself is the deliverable.
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Architecture](#architecture)
+- [Setup](#setup)
+- [Usage](#usage)
+- [Which blockchain, and why Solana](#which-blockchain-and-why-solana)
+- [Requirement coverage](#requirement-coverage)
+- [Accuracy](#accuracy)
+- [Testing](#testing)
+- [Screen recording](#screen-recording)
+- [Project structure](#project-structure)
+- [Known limitations](#known-limitations)
 
 ## How it works
 
 ```
-input photo
-  │  face.py — detect largest face, 512-d ArcFace embedding (InsightFace
-  │            buffalo; YuNet+SFace / ONNX / pixel fallbacks if unavailable)
+input photo (file or URL)
+  │ 1. face.py — detect largest face → 512-d ArcFace embedding (InsightFace)
   ▼
-face embedding + bbox + sha256
-  │  reverse_search.py — publish to temp public URL if local, then LIVE
-  │            reverse-image query of FULL image + FACE CROP (SerpApi Google
-  │            Lens if SERPAPI_API_KEY is set, else Yandex CBIR sites index).
-  │            Nothing is hardcoded; every match comes from the live index.
+face embedding + bounding box + sha256
+  │ 2. reverse_search.py — publish to a temp public URL if local, then a LIVE
+  │    reverse-image query of the FULL image and the FACE CROP
+  │    (SerpApi Google Lens if SERPAPI_API_KEY is set, else Yandex CBIR).
+  │    Nothing is hardcoded; every match comes from the live index.
   ▼
-  │  match_verify.py — download each social candidate's photo, re-encode,
-  │            keep only matches showing the SAME face (cosine similarity).
+  │ 3. match_verify.py — download each social candidate's photo, re-encode
+  │    its face, keep only matches showing the SAME face (cosine similarity
+  │    ≥ threshold, default 0.45). Candidates are ranked by similarity.
   ▼
-verified real social-media match (title, post URL, similarity score)
-  │  blockchain.py / stellar.py — SHA-256 of the canonical record written
-  │            as a Solana devnet Memo (primary) or Stellar testnet
-  │            ManageData (fallback). Immutable once confirmed.
+verified real social-media post (title, post URL, similarity score)
+  │ 4. blockchain.py / stellar.py — SHA-256 of the canonical record is
+  │    written as a Solana devnet Memo (primary) or Stellar testnet
+  │    ManageData (automatic fallback). Immutable once confirmed.
   ▼
-out/record.json + out/tx.json + explorer URL
+out/record.json + out/matches.json + out/tx.json + public explorer URL
 ```
 
-## Which blockchain
+Only hashes and the match's public post URL ever go on-chain — never the
+photo, never the embedding.
 
-**Primary: Solana devnet** via your RPC (`SOLANA_RPC_URL`, e.g. Helius
-`https://devnet.helius-rpc.com/?api-key=KEY`): auto-creates a keypair, funds
-via faucet, writes a Memo (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`).
-Verify at `https://explorer.solana.com/tx/<signature>?cluster=devnet`.
+## Architecture
 
-**Automatic fallback: Stellar testnet** — if the Solana faucet is
-rate-limited, funds via the open Friendbot faucet and stores the record
-SHA-256 (+ match URL) in `ManageData` ops.
-Verify at `https://stellar.expert/explorer/testnet/tx/<hash>`.
-`--chain solana|stellar|auto` selects explicitly (`auto` default).
+| Module | Responsibility | Key detail |
+|---|---|---|
+| `pipeline.py` | Orchestrates the 5 steps; CLI flags; final result summary | SSRF guard on URL inputs, `--no-upload` privacy mode, `--strict-social` judging mode |
+| `face.py` | Face detection + encoding, tiered backends | Tier 1: InsightFace ArcFace 512-d · Tier 2: ONNX ArcFace · Tier 3: YuNet+SFace 128-d · Tier 4: offline pixel fallback |
+| `reverse_search.py` | Genuine live reverse-image search | SerpApi Google Lens (`engine=google_lens`, `type=all`) or keyless Yandex CBIR `cbir_page=sites`; full image + face crop; social-domain filter |
+| `match_verify.py` | Proves the hit shows the same face | Downloads candidate photo (full image → thumbnail fallback), cosine similarity vs threshold |
+| `blockchain.py` | Solana devnet memo writer (pure Python: `base58`+`pynacl`) | Hand-rolled legacy tx proven byte-equivalent to `solders`; tested against devnet simulate |
+| `stellar.py` | Stellar testnet fallback writer (`stellar-sdk`) | Record hash + post URL in `ManageData` ops, funded via open Friendbot faucet |
+| `verify.py` | Independent re-verification | Recomputes canonical SHA-256, compares with on-chain memo/data → MATCH / MISMATCH |
+| `bench.py` | Accuracy benchmark over `samples/groundtruth.json` | Reports recall, top-1 by similarity, best similarity per case |
 
-## How to run
+## Setup
+
+Prerequisites: **Python 3.14** (3.10+ works), `pip`, ~500 MB free (face models
+download once on first run).
 
 ```bash
-pip install -r requirements.txt  # pinned versions
-
-# Full pipeline (face + live search + verify + chain):
-python pipeline.py --image samples/elon_musk.jpg --out out
-
-# Privacy mode (never publish local files; URL inputs only):
-python pipeline.py --image https://example.com/photo.jpg --out out --no-upload
-
-# Competition-strict: exit non-zero unless a FACE-VERIFIED social match exists:
-python pipeline.py --image photo.jpg --out out --strict-social --threshold 0.45
-
-# Face + search only (no chain write):
-python pipeline.py --image photo.jpg --out out --skip-chain
-
-# Verify a record against its on-chain data any time later:
-python verify.py --tx <signature> --record out/record.json
-
-# Accuracy benchmark over samples/groundtruth.json:
-python bench.py
-
-# Tests (10 offline + 3 network):
-python -m pytest -m "not network" -q
-python -m pytest -q  # includes live network tests
-
-# One-command run (good for the screen recording):
-bash run.sh samples/elon_musk.jpg
+git clone https://github.com/hypertonny/face-blockchain-verify.git
+cd face-blockchain-verify
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt   # pinned versions
 ```
 
-Secrets (env only — never committed, never logged):
+API keys (env only — never committed, never logged; see `.env.example`):
 
-| var | effect |
-|---|---|
-| `SERPAPI_API_KEY` | genuine Google Lens via SerpApi (`engine=google_lens`, `type=all`); else Yandex CBIR |
-| `SOLANA_RPC_URL` | Solana RPC (default public devnet; Helius recommended) |
-| `FBV_SKIP_MODEL_DOWNLOAD=1` | skip the ArcFace bundle; use offline fallback backend |
+```bash
+# cp .env.example ~/.fbv_keys   # then fill in, chmod 600, and:
+source ~/.fbv_keys
+```
 
-See `.env.example`. Artifacts in `out/`: `record.json` (canonical record +
-`record_sha256` + verification), `matches.json` (ranked live matches),
-`tx.json` (signature + explorer URL), `face_crop.jpg`, `id.json` / `stellar.json`
-(auto-generated keypairs — 0600, git-ignored, keep secret).
+| Variable | Required? | Purpose |
+|---|---|---|
+| `SERPAPI_API_KEY` | Recommended | Genuine Google Lens (`type=all`: exact + visual matches). Without it, keyless Yandex CBIR is used. Free 250 searches/month. |
+| `SOLANA_RPC_URL` | Recommended | Solana RPC, e.g. `https://devnet.helius-rpc.com/?api-key=KEY`. Defaults to the public devnet endpoint (rate-limited). |
+| `FBV_SKIP_MODEL_DOWNLOAD=1` | No | Skip the ArcFace bundle; use the offline fallback backend. |
 
-Measured accuracy: see `ACCURACY.md`.
+## Usage
+
+```bash
+# Full pipeline: face → live search → face-verify → on-chain record
+python pipeline.py --image samples/elon_musk.jpg --out out
+
+# Any local photo or public URL
+python pipeline.py --image /path/to/photo.jpg --out out
+python pipeline.py --image https://example.com/photo.jpg --out out
+
+# Judging mode: exit non-zero unless a FACE-VERIFIED social match exists
+python pipeline.py --image photo.jpg --out out --strict-social --threshold 0.45
+
+# Privacy mode: never publish local files (URL inputs only)
+python pipeline.py --image https://example.com/photo.jpg --out out --no-upload
+
+# Face + search only (no chain write, no funds needed)
+python pipeline.py --image photo.jpg --out out --skip-chain
+
+# Choose chain explicitly (default auto = Solana, Stellar fallback)
+python pipeline.py --image photo.jpg --out out --chain solana
+python pipeline.py --image photo.jpg --out out --chain stellar
+
+# Re-verify any record against its on-chain data, any time later
+python verify.py --tx <signature> --record out/record.json
+
+# Accuracy benchmark (needs samples/groundtruth.json + local photos)
+python bench.py
+
+# One-command run (use for the screen recording)
+bash run.sh samples/elon_musk.jpg
+# Full record-ready session (pipeline + verify chained)
+bash demo_run.sh
+```
+
+Each run prints per-step timings, a ranked candidate table
+(`VERIFIED`/`rejected` + similarity + domain + post URL), and a final
+result box with the explorer link and the exact `verify.py` command.
+
+Artifacts in `out/`: `record.json` (canonical record + `record_sha256` +
+verification), `matches.json` (ranked live matches), `tx.json` (signature +
+explorer URL), `face_crop.jpg`, `id.json` / `stellar.json` (auto-generated
+keypairs — `0600`, git-ignored, keep secret).
+
+## Which blockchain, and why Solana
+
+**Primary: Solana devnet.** Sub-cent fees and ~400 ms slots make per-case
+memo writes effectively free and fast; the **native Memo program**
+(`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`) stores arbitrary bytes with
+no contract to deploy or audit; any judge verifies via the explorer link
+with no node or key. Override the RPC with `SOLANA_RPC_URL`.
+
+**Where Helius is used:** Helius is the **RPC provider + faucet**, nothing
+more. Every chain call in `blockchain.py` — `getLatestBlockhash`,
+`requestAirdrop`, `sendTransaction`, `getSignatureStatuses`,
+`getTransaction` — goes through `SOLANA_RPC_URL`
+(`https://devnet.helius-rpc.com/?api-key=KEY`). The default public endpoint
+works but is aggressively rate-limited (including a ~1 SOL/day/project
+faucet cap); Helius raises those limits and lands transactions over staked
+connections.
+
+**Automatic fallback: Stellar testnet** (`stellar.py`). If the Solana faucet
+is throttled, the pipeline funds a fresh account via the open Friendbot
+faucet and stores the record SHA-256 (+ post URL) in `ManageData`
+operations. Verify at `https://stellar.expert/explorer/testnet/tx/<hash>`.
+
+## Requirement coverage
+
+| Briefing requirement | Implementation | Evidence |
+|---|---|---|
+| Detect + encode a face, any library | `face.py` — InsightFace ArcFace 512-d (+3 fallback tiers) | `face_crop.jpg`, `embedding_sha256` in `record.json` |
+| Real matching social post, genuine reverse-image search, no hardcoding | `reverse_search.py` — live SerpApi Lens / Yandex CBIR, full + crop; `match_verify.py` cosine check | `matches.json`; `verified_match` + `similarity`; `ACCURACY.md` 5/5 top-1 |
+| Tamper-evident verifiable blockchain record | `blockchain.py` Solana memo / `stellar.py` ManageData | explorer URL in `tx.json`; `verify.py` → MATCH |
+| No website or hosting | Pipeline + tests only | — |
+| Source: functionality, run, chain, limitations | This README + `ACCURACY.md` | — |
+| Unedited screen recording | `bash demo_run.sh` in one take | Your capture (script prints everything needed) |
+
+## Accuracy
+
+Measured with face-verification on (cosine, threshold 0.45). Full table in
+[`ACCURACY.md`](ACCURACY.md): **recall 5/5, top-1 by similarity 5/5** on the
+user-confirmed ground-truth set (Lens, full+crop, 512-d). The pipeline also
+correctly rejects lookalikes (e.g. 0.14 / 0.005 similarities). Reference
+run: Elon sample → x.com post, similarity **0.9687**, Stellar tx
+`95de4c44…0df2e`, verify MATCH.
+
+## Testing
+
+```bash
+python -m pytest -m "not network" -q   # 10 offline unit tests
+python -m pytest -q                    # + 3 live network tests
+```
+
+Offline: parser strictness, social filter, cosine math, SSRF refusals,
+keypair-path safety, memo-tx byte structure, hash determinism, tamper
+detection. Network: our hand-rolled Solana tx must behave **byte-identical
+to `solders`** on devnet simulate (this test once caught a real missing
+signature-count byte), live Yandex search returns matches, Horizon testnet
+reachable. CI runs the offline suite on every push (`.github/workflows/ci.yml`).
 
 ## Screen recording
 
-To record the unedited end-to-end session:
+Record one unedited terminal session (OBS / gnome-screencast / screen
+capture) running:
 
 ```bash
-bash demo_run.sh   # face → live search → verified match → chain → verify
+bash demo_run.sh
 ```
 
-`demo_run.sh` prints the `verify.py` command with the real signature at the
-end — capture the whole terminal session in one take (OBS / gnome-screencast).
-Older renders (`demo.mp4`, `demo.cast`) predate the verification step.
+It runs the full pipeline on the sample (face → live search → verified
+ranking → on-chain confirmation → result box) then chains the exact
+`verify.py` command with the real signature, ending in MATCH. Nothing to
+edit out — one command, one take.
+
+## Project structure
+
+```
+pipeline.py  reverse_search.py  match_verify.py  face.py
+blockchain.py  stellar.py  verify.py  bench.py
+tests/  samples/ (elon_musk.jpg tracked; personal test photos git-ignored)
+run.sh  demo_run.sh  requirements.txt (pinned)  pytest.ini
+.github/workflows/ci.yml  README.md  ACCURACY.md  .env.example
+```
 
 ## Known limitations
 
-- **Face recognition ≠ identity proof.** The embedding + similarity score prove
-  the *same face* appears in both photos, not who the person legally is.
-- **Reverse search depends on public indexes.** Lens / Yandex CBIR only find
-  publicly indexed copies. Fresh or private photos may return zero social
-  matches — `--strict-social` then exits 2 instead of recording a weak match.
+- **Face recognition ≠ identity proof.** Embedding + similarity prove the
+  *same face* appears in both photos, not legal identity.
+- **Reverse search needs public indexes.** Fresh/private photos may yield zero
+  social matches — `--strict-social` then exits 2 instead of recording weak
+  evidence. Live indexes also shift: provider result order varies run to run
+  (why we re-rank by face similarity).
 - **Local files need a temporary public URL** (catbox.moe / tmpfiles.org) so
-  the CBIR engine can fetch the bytes — unless `--no-upload` with a URL input.
-  The bytes hashed in `record.json` are always the local original.
-- **Solana devnet is a test network** (resettable, no mainnet value). Its
-  faucet is rate-limited (Helius: 1 SOL/project/day); the pipeline fails over
-  to Stellar testnet automatically.
-- **Scraping fragility.** The keyless Yandex path parses pages that can change
-  layout; SerpApi Lens is the stable path.
-- **Privacy.** Only hashes + the match's public post URL go on-chain, never
-  the photo or embedding — but reverse-searching someone else's photo without
-  consent may violate platform ToS / local law. Use your own photos or
-  public-figure samples (see `samples/`).
+  the CBIR engine can fetch bytes — unless `--no-upload` with URL input. The
+  hashed bytes are always the local original.
+- **Solana devnet is a test network** (resettable, no mainnet value) and its
+  faucet is rate-limited; the pipeline fails over to Stellar automatically.
+- **Keyless Yandex parsing is fragile** (page layouts change); SerpApi Lens
+  is the stable path.
+- **Privacy.** Only hashes + the public post URL go on-chain — but
+  reverse-searching someone else's photo without consent may violate platform
+  ToS / local law. Use your own photos or public-figure samples.

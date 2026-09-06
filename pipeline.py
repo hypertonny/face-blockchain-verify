@@ -29,6 +29,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -65,6 +66,14 @@ def guard_url(url):
             raise ValueError(f"refusing non-public image host "
                              f"{u.hostname} -> {ip}")
     return url
+
+
+def rpc_host():
+    """Solana RPC host with any API key redacted (never log secrets)."""
+    raw = os.environ.get("SOLANA_RPC_URL", "https://api.devnet.solana.com")
+    u = urllib.parse.urlparse(raw)
+    tag = " (default public endpoint)" if "api.devnet" in u.netloc else ""
+    return f"{u.scheme}://{u.netloc}{u.path}{tag}"
 
 
 def keypair_safe(path, allow_risk=False):
@@ -138,6 +147,17 @@ def main():
     if not args.skip_chain and args.chain in ("auto", "solana"):
         keypair_safe(keypair, args.allow_keypair_risk)
     t0 = datetime.datetime.now(datetime.timezone.utc)
+    wall = time.monotonic()
+
+    def tick(label):
+        tick.last = getattr(tick, "last", wall)
+        now = time.monotonic()
+        print(f"{label}  [t+{now - wall:6.1f}s (+{now - tick.last:5.1f}s)]")
+        tick.last = now
+
+    print(f"       solana RPC: {rpc_host()}")
+    print(f"       lens provider: "
+          f"{'serpapi-google-lens' if os.environ.get('SERPAPI_API_KEY') else 'yandex-cbir'}")
 
     # Resolve image bytes.
     local = args.image
@@ -146,21 +166,24 @@ def main():
         guard_url(args.image)
         local = os.path.join(args.out, "input_downloaded.jpg")
         urllib.request.urlretrieve(args.image, local)
-        print(f"[1/5] downloaded input -> {local}")
+        tick("[1/5] downloaded input")
+        print(f"       -> {local}")
     else:
-        print(f"[1/5] input image: {local}")
+        tick("[1/5] input image")
+        print(f"       {local}")
 
     input_sha256 = sha256_file(local)
     print(f"       sha256: {input_sha256}")
 
     # Step 1: face detect + encode.
-    print("[2/5] detecting + encoding face ...")
     face = detect_and_encode(local, out_dir=args.out)
-    print(f"       backend={face['backend']} dim={face['embedding_dim']} "
-          f"bbox={face['bbox']} emb_sha256={face['embedding_sha256'][:16]}...")
+    tick("[2/5] face detected + encoded")
+    print(f"       backend : {face['backend']}")
+    print(f"       vector  : {face['embedding_dim']}-d, "
+          f"sha256 {face['embedding_sha256'][:24]}...")
+    print(f"       bbox    : {face['bbox']} (score {face['det_score']:.3f})")
 
     # Step 2: genuine reverse-image search (full image + face crop).
-    print("[3/5] live reverse-image search: full image + face crop ...")
     import reverse_search as rs
     if is_url:
         full_url, crop_src = args.image, os.path.join(args.out,
@@ -168,8 +191,9 @@ def main():
     else:
         full_url = publish_image(local)
         crop_src = os.path.join(args.out, "face_crop.jpg")
+        print(f"       published input -> {full_url}")
     full_matches, provider, errors = search_url(full_url)
-    print(f"       full: provider={provider} matches={len(full_matches)}")
+    print(f"       full-image search: {len(full_matches)} matches")
     crop_matches, crop_provider, crop_errors = [], provider, []
     if os.path.exists(crop_src):
         try:
@@ -185,19 +209,21 @@ def main():
         raise SystemExit("reverse search returned no matches: " +
                          " | ".join(errors + crop_errors))
     social = [m for m in matches if rs._is_social(m)]
-    print(f"       total={len(matches)} social={len(social)}")
-
+    tick("[3/5] live reverse-image search done "
+         f"({provider}, {len(matches)} matches, {len(social)} social)")
     # Step 3: face-verify social candidates, rank verified first.
-    print(f"[4/5] face-verifying top-{VERIFY_TOP_N} social candidates ...")
-    for m in social[:VERIFY_TOP_N]:
+    print(f"       {'rank':4} {'verdict':7} {'sim':>7}  domain / post")
+    print("       " + "-" * 88)
+    for i, m in enumerate(social[:VERIFY_TOP_N], 1):
         v = verify_match(face["embedding"],
                          [m.get("image_url", ""), m.get("thumbnail_url", "")],
                          threshold=args.threshold)
         m["verification"] = v
         sim = v.get("similarity")
-        print(f"       [{'OK ' if v['verified'] else ' --'}] "
-              f"sim={sim if sim is not None else 'n/a':>6} "
-              f"{m['domain'][:28]:28} {m['page_url'][:70]}")
+        sim_s = f"{sim:.4f}" if sim is not None else "n/a   "
+        print(f"       #{i:<3} [{'VERIFIED' if v['verified'] else 'rejected'}] "
+              f"{sim_s}  {m['domain'][:30]}")
+        print(f"              {m['page_url'][:84]}")
     verified = [m for m in social if m.get("verification", {}).get("verified")]
     verified.sort(key=lambda m: m["verification"]["similarity"],
                   reverse=True)
@@ -206,8 +232,11 @@ def main():
     ranked = verified + unverified + [m for m in matches if m not in social]
     best = ranked[0]
     best_ver = best.get("verification", {})
-    print(f"       best: [{best['domain']}] verified={best_ver.get('verified')}"
-          f" sim={best_ver.get('similarity')}")
+    tick(f"[4/5] verification done "
+         f"({len(verified)}/{len(social)} verified same-face)")
+    print(f"       best: [{best['domain']}] "
+          f"verified={best_ver.get('verified')} "
+          f"sim={best_ver.get('similarity')}")
 
     if args.strict_social and not best_ver.get("verified"):
         raise SystemExit("exit 2: no face-verified social match "
@@ -286,11 +315,23 @@ def main():
     else:
         print("[5/5] skipped (--skip-chain)")
 
-    print("\nDONE. Artifacts in", args.out)
+    total = time.monotonic() - wall
+    print()
+    print("=" * 88)
+    print(f" RESULT   {'VERIFIED SAME-FACE MATCH' if best_ver.get('verified') else 'UNVERIFIED match (see --strict-social)'}")
+    print(f" POST     [{best['domain']}] {best['page_url'][:66]}")
+    print(f" SIMILARITY {best_ver.get('similarity')} "
+          f"(threshold {args.threshold}, backend {face['backend']})")
     if chain:
-        print("Verify any time with:")
-        print(f"  python verify.py --tx {chain['signature']} "
+        print(f" CHAIN    {chain['chain']}")
+        print(f" TX       {chain['signature']}")
+        print(f" EXPLORER {chain['explorer']}")
+        print(f" VERIFY   python verify.py --tx {chain['signature']} "
               f"--record {args.out}/record.json")
+    print(f" ARTIFACTS {args.out}/record.json {args.out}/matches.json "
+          f"{args.out}/tx.json {args.out}/face_crop.jpg")
+    print(f" TIME     {total:.1f}s total")
+    print("=" * 88)
 
 
 if __name__ == "__main__":
