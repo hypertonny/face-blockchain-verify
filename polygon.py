@@ -28,8 +28,12 @@ def compiled():
 
 
 def w3(rpc_url=None):
+    from web3.middleware import ExtraDataToPOAMiddleware
     url = rpc_url or os.environ.get("POLYGON_RPC_URL", DEFAULT_RPC)
-    return Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 60}))
+    web3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 60}))
+    # Polygon Amoy is Bor (proof-of-authority): blocks carry long extraData.
+    web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return web3
 
 
 def registry(web3, address=None):
