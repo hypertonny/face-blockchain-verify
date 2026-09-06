@@ -38,11 +38,15 @@ def run_case(image, expected, threshold, top_n):
             merged.append(m)
     social = [m for m in merged if rs._is_social(m)][:top_n]
     for m in social:
-        m["verification"] = verify_match(face["embedding"],
-                                         m.get("image_url", ""),
-                                         threshold=threshold)
-    rank = next((i + 1 for i, m in enumerate(merged)
-                 if expected.rstrip("/") in m["page_url"].rstrip("/")), None)
+        m["verification"] = verify_match(
+            face["embedding"],
+            [m.get("image_url", ""), m.get("thumbnail_url", "")],
+            threshold=threshold)
+    rank = None
+    if expected:
+        rank = next((i + 1 for i, m in enumerate(merged)
+                     if expected.rstrip("/") in m["page_url"].rstrip("/")),
+                    None)
     sims = [m["verification"]["similarity"] for m in social
             if m["verification"].get("similarity") is not None]
     return {"image": image, "expected": expected, "provider": provider,
@@ -51,7 +55,8 @@ def run_case(image, expected, threshold, top_n):
             "expected_rank": rank, "top1": rank == 1, "top5": rank is not None
             and rank <= 5, "best_similarity": max(sims) if sims else None,
             "social": [{k: m.get(k) for k in
-                        ("domain", "page_url", "verification")} for m in social]}
+                        ("domain", "page_url", "image_url", "thumbnail_url",
+                         "verification")} for m in social]}
 
 
 def main():

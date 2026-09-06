@@ -18,15 +18,22 @@ Earlier keyless run (Yandex CBIR): 255 matches / 42 social (unverified
 ranking). SerpApi returns fewer, higher-precision candidates; the
 verification step then selects by face similarity rather than index order.
 
-## Ground-truth benchmark — pending user samples
+## Ground-truth benchmark — user samples (2026-09-06)
 
-`samples/groundtruth.json` format:
+SerpApi Google Lens (`type=all`), dual search (full + crop), InsightFace
+512-d, threshold 0.45. `verified` = same face confirmed by cosine similarity.
 
-```json
-[{"image": "samples/image-1.png",
-  "expected_post_url": "https://x.com/.../status/..."}]
-```
+| image | matches / social / verified | best verified post | sim |
+|---|---|---|---|
+| image-1 (apparent Mr. Faisu) | 116 / 8 / 5 | pinterest.com/pin/848928598502276539 (also IG `_mr_faisu_07_tm`, TikTok `@mr_faisu_07` video, FB photos all verified) | 0.6756 |
+| image-2 | 119 / 8 / 6+ | instagram.com/reel/Db7KsNXpo-9 (also YT short, reddit, FB verified) | 0.8904 |
+| image-3 | 116 / 8 / 5 | reddit r/InstaCelebsGossip (also FB 0.9564, IG 0.9421, X 0.9391) | 0.9692 |
+| image-4 (apparent Tom Holland) | 111 / 8 / 6+ | instagram.com/p/DbUcFQajOhf (also X, threads, FB verified) | 0.9101 |
+| image-5 (apparent Akshay Kumar) | 119 / 8 / 1 | facebook.com/p/Iam-joy-61589795287166 — modest score, needs human confirmation | 0.5568 |
 
-Run `python bench.py` → `bench_results.json` with top-1/top-5 hit-rate and
-best verified similarity per case. Fill this table once `image-1..5.png`
-are placed in `samples/`.
+Correctly rejected lookalikes: LinkedIn post 0.1399, Jim Caviezel board
+0.0051, unrelated IG/FB posts ~0.0 (below threshold). Full per-candidate
+data: run `python bench.py` (needs the local-only sample photos).
+
+`samples/groundtruth.json` template is in the repo; fill
+`expected_post_url` per image to lock top-1/top-5 regression scores.

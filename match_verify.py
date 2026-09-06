@@ -54,11 +54,25 @@ def cosine(a, b):
 
 def verify_match(face_embedding, match_image_url, threshold=DEFAULT_THRESHOLD,
                  timeout=30):
-    """Compare the input face embedding against the match image's face."""
-    img = fetch_image(match_image_url, timeout=timeout)
+    """Compare the input face embedding against the match image's face.
+
+    match_image_url may be a single URL or a list tried in order (e.g.
+    full-size image first, hotlink-friendly thumbnail second).
+    """
+    urls = [match_image_url] if isinstance(match_image_url, str) \
+        else list(match_image_url or [])
+    img, tried = None, 0
+    for u in urls:
+        if not u:
+            continue
+        tried += 1
+        img = fetch_image(u, timeout=timeout)
+        if img is not None:
+            break
     if img is None:
         return {"verified": False, "similarity": None,
-                "reason": "match-image-download-failed"}
+                "reason": "match-image-download-failed",
+                "tried_urls": tried}
     try:
         enc = detect_and_encode_array(img)
     except Exception as e:  # noqa: BLE001

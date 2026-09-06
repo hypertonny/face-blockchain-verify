@@ -194,6 +194,7 @@ def serpapi_lens_search(image_url, timeout=60):
             "domain": urllib.parse.urlparse(link).netloc,
             # Full-size match image preferred (face verification), else thumb.
             "image_url": m.get("image", "") or m.get("thumbnail", ""),
+            "thumbnail_url": m.get("thumbnail", ""),
             "source": m.get("source", ""),
             "provider": "serpapi-google-lens",
         })

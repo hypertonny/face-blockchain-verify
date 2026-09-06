@@ -190,7 +190,8 @@ def main():
     # Step 3: face-verify social candidates, rank verified first.
     print(f"[4/5] face-verifying top-{VERIFY_TOP_N} social candidates ...")
     for m in social[:VERIFY_TOP_N]:
-        v = verify_match(face["embedding"], m.get("image_url", ""),
+        v = verify_match(face["embedding"],
+                         [m.get("image_url", ""), m.get("thumbnail_url", "")],
                          threshold=args.threshold)
         m["verification"] = v
         sim = v.get("similarity")
@@ -230,7 +231,7 @@ def main():
             "threshold": args.threshold,
             "best_match": {k: best.get(k) for k in
                            ("title", "page_url", "domain", "image_url",
-                            "provider", "searched_as")},
+                            "thumbnail_url", "provider", "searched_as")},
             "match_verification": best_ver,
             "num_matches": len(matches),
             "num_social_matches": len(social),

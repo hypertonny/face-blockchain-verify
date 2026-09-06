@@ -6,3 +6,7 @@ out/
 out_demo/
 out_serpapi/
 bench_results.json
+# User-supplied test photos stay local-only (never commit personal photos
+# to the public repo). Only samples/elon_musk.jpg is tracked.
+samples/image-*.png
+samples/pasted*
