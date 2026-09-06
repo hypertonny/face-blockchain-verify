@@ -14,11 +14,24 @@ pixels at runtime.
 """
 
 import hashlib
+import io
 import os
 import urllib.request
+import warnings
+from contextlib import redirect_stderr, redirect_stdout
 
 import cv2
 import numpy as np
+
+# Keep third-party chatter out of the pipeline output (clean CLI).
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
+warnings.filterwarnings("ignore", module="insightface")
+warnings.filterwarnings("ignore", module="onnxruntime")
+try:
+    import onnxruntime as _ort  # type: ignore
+    _ort.set_default_logger_severity(3)  # errors only
+except Exception:  # noqa: BLE001
+    pass
 
 MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".models")
 
@@ -73,16 +86,29 @@ def _load_image(path):
     return img
 
 
+_APP = None  # cached InsightFace session (models load once, not per face)
+
+
 def _insightface_backend():
+    global _APP
+    if _APP is not None:
+        return _APP or None
     try:
         from insightface.app import FaceAnalysis  # type: ignore
     except Exception:
+        _APP = False
         return None
     try:
-        app = FaceAnalysis(name="buffalo_s")
-        app.prepare(ctx_id=-1, det_size=(640, 640))
+        # InsightFace prints model-loading banners; silence for clean output.
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                app = FaceAnalysis(name="buffalo_s")
+                app.prepare(ctx_id=-1, det_size=(640, 640))
+        _APP = app
         return app
     except Exception:
+        _APP = False
         return None
 
 
