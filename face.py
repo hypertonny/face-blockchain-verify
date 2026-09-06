@@ -23,6 +23,17 @@ from contextlib import redirect_stderr, redirect_stdout
 import cv2
 import numpy as np
 
+# Silence OpenCV's C++ DNN chatter (e.g. graph-engine warnings) for good:
+# the env var alone does not cover logs emitted after import.
+try:
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+except Exception:  # noqa: BLE001 — old builds lack the API
+    pass
+
+
+class NoFaceFound(Exception):
+    """Raised when require_face=True and no detector finds a face."""
+
 # Keep third-party chatter out of the pipeline output (clean CLI).
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 warnings.filterwarnings("ignore", module="insightface")
@@ -238,10 +249,13 @@ def _pixel_embed(face_bgr):
     return small.astype(np.float32)
 
 
-def detect_and_encode_array(img):
+def detect_and_encode_array(img, require_face=False):
     """Detect the largest face in a BGR array and compute its embedding.
 
     Returns dict with bbox, embedding (list), embedding_sha256, backend.
+    With require_face=True, raises NoFaceFound instead of falling back to
+    a center crop (used when verifying match photos: a crop of background
+    must never become a fake embedding).
     """
     h, w = img.shape[:2]
     backend = "unknown"
@@ -303,6 +317,8 @@ def detect_and_encode_array(img):
     if embedding is None:
         boxes = _detect_dnn(img)
         if not boxes:
+            if require_face:
+                raise NoFaceFound("no detector found a face")
             # Last resort: center crop so the pipeline still yields a record.
             cx, cy = w // 2, h // 2
             s = min(w, h) // 2

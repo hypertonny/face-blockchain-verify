@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 import requests
 
-from face import detect_and_encode_array
+from face import NoFaceFound, detect_and_encode_array
 
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -74,7 +74,10 @@ def verify_match(face_embedding, match_image_url, threshold=DEFAULT_THRESHOLD,
                 "reason": "match-image-download-failed",
                 "tried_urls": tried}
     try:
-        enc = detect_and_encode_array(img)
+        enc = detect_and_encode_array(img, require_face=True)
+    except NoFaceFound:
+        return {"verified": False, "similarity": None,
+                "reason": "no-face-in-match-image"}
     except Exception as e:  # noqa: BLE001
         return {"verified": False, "similarity": None,
                 "reason": f"match-face-encode-failed: {e}"}

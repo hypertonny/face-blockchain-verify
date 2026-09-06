@@ -83,8 +83,21 @@ def test_record_hash_deterministic():
     assert h1 == h2 and len(h1) == 64
 
 
-def test_tamper_detected():
-    canonical = {"face": {"embedding_sha256": "a" * 64}}
+def test_require_face_raises_on_blank(monkeypatch):
+    import numpy as np
+    import face as face_mod
+    # Force every detector to find nothing: must raise, never crop garbage.
+    monkeypatch.setattr(face_mod, "_detect_yunet", lambda img: [])
+    monkeypatch.setattr(face_mod, "_detect_dnn", lambda img: [])
+    blank = np.zeros((200, 200, 3), dtype=np.uint8)
+    with pytest.raises(face_mod.NoFaceFound):
+        face_mod.detect_and_encode_array(blank, require_face=True)
+    # ...while the input-photo path still falls back gracefully.
+    r = face_mod.detect_and_encode_array(blank)
+    assert r["backend"] == "fallback-center-crop+pixel-embedding"
+
+
+def test_tamper_detected():    canonical = {"face": {"embedding_sha256": "a" * 64}}
     good = hashlib.sha256(
         json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     tampered = dict(canonical, face={"embedding_sha256": "b" * 64})
