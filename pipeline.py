@@ -26,6 +26,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -91,6 +92,12 @@ def keypair_safe(path, allow_risk=False):
         return True
     ui.die(f"refusing keypair at {path}: not git-ignored (secret leak risk)",
            hint="put it under out/ (ignored) or pass --allow-keypair-risk")
+
+
+def short_post(url, width=52):
+    """Compact post display: strip scheme/www, truncate tail with …."""
+    s = re.sub(r"^https?://(www\.)?", "", url or "")
+    return s if len(s) <= width else s[:width - 1] + "…"
 
 
 def merge_matches(*lists):
@@ -227,14 +234,15 @@ def main(argv=None, prog=None):
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         list(ex.map(_v, cands))
+    print(f"   {'':4} {'sim':>6}  {'domain':18}  post")
     for m in cands:
         v = m["verification"]
         sim = v.get("similarity")
-        sim_s = f"{sim:.4f}" if sim is not None else "  n/a"
+        sim_s = f"{sim:.4f}" if sim is not None else "  n/a "
         mark = (ui.c(ui.OK, "green", "bold") if v["verified"]
                 else ui.c(ui.FAIL, "red"))
-        print(f"   {mark} {sim_s}  {m['domain'][:30]:30} "
-              f"{m['page_url'][:60]}")
+        print(f"   {mark} {sim_s}  {m['domain'][:18]:18}  "
+              f"{short_post(m['page_url'])}")
     verified = [m for m in social if m.get("verification", {}).get("verified")]
     verified.sort(key=lambda m: m["verification"]["similarity"],
                   reverse=True)
@@ -334,20 +342,20 @@ def main(argv=None, prog=None):
     else:
         ui.step(4, 4, "Chain — skipped (--skip-chain)")
 
-    # Summary.
+    # Summary — short scannable lines; full values live in out/*.json.
     total = time.monotonic() - wall
     print()
     if best_ver.get("verified"):
-        print(f"{ui.c(ui.OK + ' VERIFIED SAME-FACE MATCH', 'green', 'bold')}")
+        print(f"{ui.c(ui.OK + ' VERIFIED SAME-FACE MATCH', 'green', 'bold')}"
+              f"  sim {best_ver.get('similarity')}")
     else:
         print(f"{ui.c(ui.WARN + ' UNVERIFIED MATCH', 'yellow', 'bold')} "
               f"{ui.dim('(use --strict-social to require verification)')}")
-    ui.info(f"post     {best['page_url']}")
-    ui.info(f"sim      {best_ver.get('similarity')} "
-            f"(threshold {args.threshold})")
+    ui.info(f"post     {short_post(best['page_url'], 76)}")
     if chain:
-        ui.info(f"chain    {chain['chain']}")
-        ui.info(f"tx       {chain['signature']}")
+        ui.info(f"chain    {chain['chain']} · CONFIRMED")
+        ui.info(f"tx       {chain['signature'][:24]}… "
+                f"(full: {args.out}/tx.json)")
         ui.info(f"explorer {chain['explorer']}")
         ui.info(f"verify   fbv verify --tx {chain['signature']} "
                 f"--record {args.out}/record.json")
