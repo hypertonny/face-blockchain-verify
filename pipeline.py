@@ -70,14 +70,6 @@ def guard_url(url):
     return url
 
 
-def rpc_host():
-    """Solana RPC host with any API key redacted (never log secrets)."""
-    raw = os.environ.get("SOLANA_RPC_URL", "https://api.devnet.solana.com")
-    u = urllib.parse.urlparse(raw)
-    tag = " (default public endpoint)" if "api.devnet" in u.netloc else ""
-    return f"{u.scheme}://{u.netloc}{u.path}{tag}"
-
-
 def keypair_safe(path, allow_risk=False):
     """Refuse keypair locations that git would commit (secret leak)."""
     parent = os.path.dirname(os.path.abspath(path)) or "."
@@ -158,15 +150,7 @@ def main():
     t0 = datetime.datetime.now(datetime.timezone.utc)
     wall = time.monotonic()
 
-    def tick(label):
-        tick.last = getattr(tick, "last", wall)
-        now = time.monotonic()
-        print(f"{label}  [t+{now - wall:6.1f}s (+{now - tick.last:5.1f}s)]")
-        tick.last = now
-
-    print(f"       solana RPC: {rpc_host()}")
-    print(f"       lens provider: "
-          f"{'serpapi-google-lens' if os.environ.get('SERPAPI_API_KEY') else 'yandex-cbir'}")
+    print(f"Image : {args.image}")
 
     # Resolve image bytes.
     local = args.image
@@ -178,24 +162,16 @@ def main():
             die(str(e))
         local = os.path.join(args.out, "input_downloaded.jpg")
         urllib.request.urlretrieve(args.image, local)
-        tick("[1/5] downloaded input")
-        print(f"       -> {local}")
-    else:
-        tick("[1/5] input image")
-        print(f"       {local}")
 
     input_sha256 = sha256_file(local)
-    print(f"       sha256: {input_sha256}")
 
     # Step 1: face detect + encode.
+    print("[1/4] Face ...", flush=True)
     face = detect_and_encode(local, out_dir=args.out)
-    tick("[2/5] face detected + encoded")
-    print(f"       backend : {face['backend']}")
-    print(f"       vector  : {face['embedding_dim']}-d, "
-          f"sha256 {face['embedding_sha256'][:24]}...")
-    print(f"       bbox    : {face['bbox']} (score {face['det_score']:.3f})")
+    print(f"      {face['backend']}, {face['embedding_dim']}-d embedding")
 
     # Step 2: genuine reverse-image search (full image + face crop).
+    print("[2/4] Search ...", flush=True)
     import reverse_search as rs
     if is_url:
         full_url, crop_src = args.image, os.path.join(args.out,
@@ -203,29 +179,24 @@ def main():
     else:
         full_url = publish_image(local)
         crop_src = os.path.join(args.out, "face_crop.jpg")
-        print(f"       published input -> {full_url}")
     full_matches, provider, errors = search_url(full_url)
-    print(f"       full-image search: {len(full_matches)} matches")
     crop_matches, crop_provider, crop_errors = [], provider, []
     if os.path.exists(crop_src):
         try:
             crop_url = full_url if is_url else publish_image(crop_src)
             crop_matches, crop_provider, crop_errors = search_url(crop_url)
             provider = provider or crop_provider
-            print(f"       crop: matches={len(crop_matches)}")
         except Exception as e:  # noqa: BLE001
             crop_errors.append(str(e))
-            print(f"       crop search failed: {e}")
     matches = merge_matches((full_matches, "full"), (crop_matches, "crop"))
     if not matches:
         die("reverse search returned no matches: " +
             " | ".join(errors + crop_errors))
     social = [m for m in matches if rs._is_social(m)]
-    tick("[3/5] live reverse-image search done "
-         f"({provider}, {len(matches)} matches, {len(social)} social)")
+    print(f"      {provider}: {len(matches)} matches, {len(social)} social posts")
+
     # Step 3: face-verify social candidates, rank verified first.
-    print(f"       {'rank':4} {'verdict':7} {'sim':>7}  domain / post")
-    print("       " + "-" * 88)
+    print("[3/4] Verify ...", flush=True)
     for i, m in enumerate(social[:VERIFY_TOP_N], 1):
         v = verify_match(face["embedding"],
                          [m.get("image_url", ""), m.get("thumbnail_url", "")],
@@ -233,9 +204,9 @@ def main():
         m["verification"] = v
         sim = v.get("similarity")
         sim_s = f"{sim:.4f}" if sim is not None else "n/a   "
-        print(f"       #{i:<3} [{'VERIFIED' if v['verified'] else 'rejected'}] "
-              f"{sim_s}  {m['domain'][:30]}")
-        print(f"              {m['page_url'][:84]}")
+        mark = "VERIFIED" if v["verified"] else "rejected"
+        print(f"      #{i} [{mark}] {sim_s}  "
+              f"{m['domain'][:32]:32} {m['page_url'][:60]}")
     verified = [m for m in social if m.get("verification", {}).get("verified")]
     verified.sort(key=lambda m: m["verification"]["similarity"],
                   reverse=True)
@@ -244,11 +215,8 @@ def main():
     ranked = verified + unverified + [m for m in matches if m not in social]
     best = ranked[0]
     best_ver = best.get("verification", {})
-    tick(f"[4/5] verification done "
-         f"({len(verified)}/{len(social)} verified same-face)")
-    print(f"       best: [{best['domain']}] "
-          f"verified={best_ver.get('verified')} "
-          f"sim={best_ver.get('similarity')}")
+    print(f"      {len(verified)}/{len(social)} same-face, "
+          f"best: {best['domain']} (sim {best_ver.get('similarity')})")
 
     if args.strict_social and not best_ver.get("verified"):
         die("no face-verified social match (--strict-social)")
@@ -282,7 +250,6 @@ def main():
     record["record_sha256"] = record_sha256
     with open(os.path.join(args.out, "record.json"), "w") as f:
         json.dump(record, f, indent=2, ensure_ascii=False)
-    print(f"       record sha256: {record_sha256}")
 
     # Step 4: blockchain write (Solana devnet primary, Stellar fallback).
     chain = None
@@ -290,33 +257,23 @@ def main():
         memo = (f"FACEVERIFY|{record_sha256}|{best['page_url']}|"
                 f"{face['embedding_sha256'][:16]}")
         tried = []
+        print("[4/4] Chain ...", flush=True)
         if args.chain in ("auto", "solana"):
             try:
-                print("[5/5] writing memo to Solana devnet ...")
                 chain = send_memo(memo, keypair)
                 chain["chain"] = "solana-devnet"
-                print(f"       tx: {chain['signature']}")
-                print(f"       explorer: {chain['explorer']}")
-                print("       waiting for confirmation ...")
                 wait_confirmed(chain["signature"])
-                print("       CONFIRMED on Solana devnet.")
             except Exception as e:  # noqa: BLE001
                 tried.append(f"solana: {e}")
                 chain = None
                 if args.chain == "solana":
                     raise
-                print(f"       solana unavailable ({e}); "
-                      "falling back to Stellar testnet ...")
         if chain is None and args.chain in ("auto", "polygon"):
             if os.environ.get("POLYGON_REGISTRY"):
                 try:
-                    print("[5/5] anchoring record on Polygon Amoy ...")
                     chain = polygon_send(record_sha256, best["page_url"])
                     chain["chain"] = "polygon-amoy"
                     chain["memo"] = memo
-                    print(f"       tx: {chain['signature']}")
-                    print(f"       explorer: {chain['explorer']}")
-                    print("       CONFIRMED on Polygon Amoy.")
                     if tried:
                         chain["fallback_from"] = tried
                 except Exception as e:  # noqa: BLE001
@@ -328,41 +285,34 @@ def main():
                 die("POLYGON_REGISTRY not set (deploy first: "
                     "python deploy_polygon.py)")
         if chain is None and args.chain in ("auto", "stellar"):
-            print("[5/5] writing record to Stellar testnet ...")
             chain = stellar_send(record_sha256, best["page_url"],
                                  os.path.join(args.out, "stellar.json"))
             chain["chain"] = "stellar-testnet"
             chain["memo"] = memo
-            print(f"       tx: {chain['signature']}")
-            print(f"       explorer: {chain['explorer']}")
-            print("       CONFIRMED on Stellar testnet.")
             if tried:
                 chain["fallback_from"] = tried
+        print(f"      {chain['chain']}: {chain['signature'][:16]}... CONFIRMED")
         record["chain"] = chain
         with open(os.path.join(args.out, "record.json"), "w") as f:
             json.dump(record, f, indent=2, ensure_ascii=False)
         with open(os.path.join(args.out, "tx.json"), "w") as f:
             json.dump(chain, f, indent=2)
     else:
-        print("[5/5] skipped (--skip-chain)")
+        print("[4/4] Chain ... skipped (--skip-chain)")
 
     total = time.monotonic() - wall
     print()
-    print("=" * 88)
-    print(f" RESULT   {'VERIFIED SAME-FACE MATCH' if best_ver.get('verified') else 'UNVERIFIED match (see --strict-social)'}")
-    print(f" POST     [{best['domain']}] {best['page_url'][:66]}")
-    print(f" SIMILARITY {best_ver.get('similarity')} "
-          f"(threshold {args.threshold}, backend {face['backend']})")
+    print(f"Best    : [{best['domain']}] sim {best_ver.get('similarity')} "
+          f"{'(VERIFIED)' if best_ver.get('verified') else '(UNVERIFIED)'}")
+    print(f"          {best['page_url']}")
+    print(f"Record  : {record_sha256[:24]}... ({args.out}/record.json)")
     if chain:
-        print(f" CHAIN    {chain['chain']}")
-        print(f" TX       {chain['signature']}")
-        print(f" EXPLORER {chain['explorer']}")
-        print(f" VERIFY   python verify.py --tx {chain['signature']} "
+        print(f"Tx      : {chain['signature']}")
+        print(f"Explorer: {chain['explorer']}")
+        print(f"Verify  : python verify.py --tx {chain['signature']} "
               f"--record {args.out}/record.json")
-    print(f" ARTIFACTS {args.out}/record.json {args.out}/matches.json "
-          f"{args.out}/tx.json {args.out}/face_crop.jpg")
-    print(f" TIME     {total:.1f}s total")
-    print("=" * 88)
+    print(f"Status  : {'MATCH on ' + chain['chain'] if chain else 'done (no chain write)'} "
+          f"({total:.0f}s)")
 
 
 if __name__ == "__main__":
