@@ -50,21 +50,26 @@ def _fees(web3):
 
 
 def build_anchor_tx(web3, record_sha256, match_url, sender):
-    """Unsigned anchor() call. Safe to inspect before signing."""
+    """Unsigned anchor() call, auto-linked to the sender's previous hash.
+
+    Reads latestBySubmitter(sender) so each new task extends the hash of
+    the task before it. Safe to inspect before signing.
+    """
     reg = registry(web3)
     h = bytes.fromhex(record_sha256)
     if len(h) != 32:
         raise ValueError("record_sha256 must be 32 bytes hex")
-    fn = reg.functions.anchor(h, match_url[:256])
+    sender = Web3.to_checksum_address(sender)
+    prev = reg.functions.latestBySubmitter(sender).call()
+    fn = reg.functions.anchor(h, match_url[:256], prev)
     tx = fn.build_transaction({
-        "from": Web3.to_checksum_address(sender),
+        "from": sender,
         "chainId": CHAIN_ID,
-        "nonce": web3.eth.get_transaction_count(
-            Web3.to_checksum_address(sender)),
+        "nonce": web3.eth.get_transaction_count(sender),
         **_fees(web3),
     })
     tx["gas"] = web3.eth.estimate_gas(tx)
-    return tx
+    return tx, prev.hex()
 
 
 def send_record(record_sha256, match_url, key=None, rpc_url=None,
@@ -77,7 +82,8 @@ def send_record(record_sha256, match_url, key=None, rpc_url=None,
                            "(reads need no key; writes do)")
     web3 = w3(rpc_url)
     acct = web3.eth.account.from_key(key)
-    tx = build_anchor_tx(web3, record_sha256, match_url, acct.address)
+    tx, prev_hash = build_anchor_tx(web3, record_sha256, match_url,
+                                    acct.address)
     signed = acct.sign_transaction(tx)
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction).hex()
     receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
@@ -85,6 +91,7 @@ def send_record(record_sha256, match_url, key=None, rpc_url=None,
         raise RuntimeError(f"anchor reverted in tx {tx_hash}")
     return {"signature": tx_hash, "payer": acct.address,
             "contract": registry(web3).address,
+            "prev_hash": prev_hash,
             "network": "polygon-amoy", "chain_id": CHAIN_ID,
             "explorer": EXPLORER_TX.format(tx_hash)}
 
@@ -104,7 +111,10 @@ def fetch_record(tx_hash, rpc_url=None):
     return {"status": receipt.get("status"), "contract": reg.address,
             "record_hash": ev["recordHash"].hex(),
             "submitter": ev["submitter"],
+            "prev_hash": ev["prevHash"].hex(),
             "match_url": ev["matchUrl"] or stored[2],
             "timestamp": ev["timestamp"],
             "stored": {"submitter": stored[0], "timestamp": stored[1],
-                       "exists": stored[3]}}
+                       "prev_hash": stored[3].hex() if isinstance(
+                           stored[3], bytes) else stored[3],
+                       "exists": stored[4]}}

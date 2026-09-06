@@ -47,6 +47,8 @@ def main(argv=None, prog=None):
             ui.info(f"contract   {got['contract']}")
             ui.info(f"submitter  {got['submitter']}")
             ui.info(f"match_url  {got['match_url']}")
+            ui.info(f"chain link {got['prev_hash'][:16]}… -> "
+                    f"{got['record_hash'][:16]}…")
             ok = (got["record_hash"] == record.get("record_sha256") == expect
                   and got["stored"]["exists"])
         elif "stellar" in chain:

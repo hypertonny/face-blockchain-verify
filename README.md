@@ -226,10 +226,13 @@ faucet and stores the record SHA-256 (+ post URL) in `ManageData`
 operations. Verify at `https://stellar.expert/explorer/testnet/tx/<hash>`.
 
 **Your own contract: Polygon Amoy** (`contracts/`, `polygon.py`,
-`deploy_polygon.py`). `FaceVerifyRegistry.anchor(recordHash, matchUrl)`
-stores the 32-byte record digest + post URL; first write wins. Deploy with
-`fbv deploy` (you sign locally), then
-`--chain polygon`. Verify at `https://amoy.polygonscan.com/tx/<hash>`.
+`deploy_polygon.py`). `FaceVerifyRegistry.anchor(recordHash, matchUrl,
+prevHash)` stores the 32-byte record digest + post URL **linked to your
+previous record hash** — every new task extends the chain, and a wrong
+`prevHash` reverts on-chain. Deploy with `fbv deploy` (you sign locally),
+then `--chain polygon`. The pipeline reads your latest hash automatically —
+just set `POLYGON_REGISTRY` once. Verify at
+`https://amoy.polygonscan.com/tx/<hash>`.
 
 ## Requirement coverage
 
